@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  agent-sdk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-sdk
+    ports:
+      - "9000:9000"
+    environment:
+      AGENT_SDK_ENV: development
+      AGENT_SDK_LOG_LEVEL: DEBUG
+      LOG_FORMAT: json
+      API_KEY: dev-key-${RANDOM}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CONFIG_PATH: /app/config.yaml
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - agent-network
+    restart: unless-stopped
+    # Optional: Limit resources
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  # Optional: Add a database service for persistence
+  # postgres:
+  #   image: postgres:15-alpine
+  #   environment:
+  #     POSTGRES_DB: agent_sdk
+  #     POSTGRES_USER: agentuser
+  #     POSTGRES_PASSWORD: changeme
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+
+# volumes:
+#   postgres_data:

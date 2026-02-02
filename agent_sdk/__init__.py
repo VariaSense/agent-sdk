@@ -19,3 +19,32 @@ from .observability.sinks import ConsoleSink, JSONLSink
 from .observability.events import ObsEvent
 
 from .plugins.loader import PluginLoader
+# Documentation access
+from . import docs
+
+__version__ = "0.1.0"
+__all__ = [
+    "Agent",
+    "AgentContext",
+    "Tool",
+    "ToolRegistry",
+    "tool",
+    "GLOBAL_TOOL_REGISTRY",
+    "PlannerExecutorRuntime",
+    "PlannerAgent",
+    "Plan",
+    "PlanStep",
+    "ExecutorAgent",
+    "LLMClient",
+    "LLMResponse",
+    "MockLLMClient",
+    "ModelConfig",
+    "RateLimitRule",
+    "RateLimiter",
+    "EventBus",
+    "ConsoleSink",
+    "JSONLSink",
+    "ObsEvent",
+    "PluginLoader",
+    "docs",
+]
