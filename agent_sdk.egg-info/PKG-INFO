@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: agent-sdk
+Version: 0.1.0
+Summary: A modular agent framework with planning, execution, tools, rate limiting, observability, plugins, CLI, server, and dashboard.
+Author: Hongwei
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn>=0.29.0
+Dynamic: license-file
+
+# Agent SDK
+
+A modular, extensible agent framework featuring:
+
+- Planner + Executor architecture
+- Tooling system with decorators and registry
+- LLM abstraction layer
+- Rate limiting (per model/agent, tokens + calls)
+- Observability (events, sinks, dashboard backend)
+- Plugin system (tools, agents, LLM providers via entry points)
+- Async support (LLM, tools, runtime)
+- CLI (`agent-sdk`)
+- Local agent server (FastAPI)
+- Dashboard (FastAPI + SSE)
+
+## Quickstart
+
+```bash
+pip install -e .
+agent-sdk init project my-app
+cd my-app
+python -c "from tools import echo; print('ok')"
+

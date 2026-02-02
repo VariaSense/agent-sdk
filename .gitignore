@@ -1,0 +1,3 @@
+echo "dist/" >> .gitignore
+echo "build/" >> .gitignore
+echo "*.egg-info/" >> .gitignore
