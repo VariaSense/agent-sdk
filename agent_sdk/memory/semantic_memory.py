@@ -11,16 +11,22 @@ Features:
 - Memory consolidation and summarization
 - Persistence (JSON, SQLite, vector databases)
 - Configurable retention and eviction policies
+- SemanticMemoryManager for integrated memory operations
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
 import logging
 import hashlib
 from abc import ABC, abstractmethod
+
+from agent_sdk.data_connectors.document import Document
+from agent_sdk.memory.embeddings import EmbeddingProvider
+from agent_sdk.memory.semantic_search import SemanticSearchEngine, SimilaritySearch
+from agent_sdk.memory.persistence import MemoryStore
 
 
 logger = logging.getLogger(__name__)
@@ -528,12 +534,196 @@ def create_semantic_memory(
     )
 
 
+class SemanticMemoryManager:
+    """Manager orchestrating embeddings, search, and persistence."""
+    
+    def __init__(
+        self,
+        embedding_provider: EmbeddingProvider,
+        memory_store: MemoryStore,
+        similarity_threshold: float = 0.7
+    ):
+        """Initialize memory manager.
+        
+        Args:
+            embedding_provider: Provider for generating embeddings.
+            memory_store: Storage backend for documents and embeddings.
+            similarity_threshold: Minimum similarity for retrieval.
+        """
+        self.embedding_provider = embedding_provider
+        self.memory_store = memory_store
+        self.similarity_threshold = similarity_threshold
+        
+        # Initialize search engine
+        self.search_engine = SemanticSearchEngine(
+            embedding_provider,
+            strategy=SimilaritySearch()
+        )
+        
+        self.documents: Dict[str, Document] = {}
+    
+    async def add_documents(self, documents: List[Document]) -> None:
+        """Add documents to memory.
+        
+        Args:
+            documents: Documents to add.
+        """
+        for doc in documents:
+            self.documents[doc.doc_id] = doc
+        
+        # Generate embeddings and persist
+        embeddings = await self.embedding_provider.embed_batch(
+            [doc.content for doc in documents]
+        )
+        
+        for doc, embedding in zip(documents, embeddings):
+            await self.memory_store.save(doc, embedding)
+        
+        # Reindex for search
+        await self.search_engine.index(documents)
+    
+    async def retrieve(
+        self,
+        query: str,
+        top_k: int = 5
+    ) -> List[Tuple[Document, float]]:
+        """Retrieve relevant documents.
+        
+        Args:
+            query: Search query.
+            top_k: Number of results.
+            
+        Returns:
+            List of (document, similarity_score) tuples.
+        """
+        results = await self.search_engine.search(query, top_k)
+        
+        # Filter by threshold
+        return [
+            (doc, score) for doc, score in results
+            if score >= self.similarity_threshold
+        ]
+    
+    async def retrieve_with_context(
+        self,
+        query: str,
+        top_k: int = 5,
+        context_window: int = 3
+    ) -> Dict[str, Any]:
+        """Retrieve documents with context.
+        
+        Args:
+            query: Search query.
+            top_k: Number of main results.
+            context_window: Number of context items.
+            
+        Returns:
+            Dictionary with results and context.
+        """
+        results = await self.retrieve(query, top_k)
+        
+        context_docs = []
+        for doc, _ in results:
+            if doc.doc_id in self.documents:
+                context_docs.extend(
+                    self.documents.get(doc.doc_id, [])
+                    for _ in range(min(context_window, 1))
+                )
+        
+        return {
+            'query': query,
+            'results': results,
+            'context': context_docs,
+            'total_retrieved': len(results)
+        }
+    
+    async def update_document(
+        self,
+        doc_id: str,
+        new_content: str,
+        new_metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Update a document.
+        
+        Args:
+            doc_id: Document ID.
+            new_content: New content.
+            new_metadata: New metadata.
+            
+        Returns:
+            True if updated.
+        """
+        if doc_id not in self.documents:
+            return False
+        
+        old_doc = self.documents[doc_id]
+        
+        # Create updated document
+        updated_doc = Document(
+            content=new_content,
+            metadata=new_metadata or old_doc.metadata,
+            source=old_doc.source,
+            doc_id=doc_id
+        )
+        
+        # Update embedding and persistence
+        embedding = await self.embedding_provider.embed_text(new_content)
+        await self.memory_store.save(updated_doc, embedding)
+        
+        # Update internal state
+        self.documents[doc_id] = updated_doc
+        
+        # Reindex
+        await self.search_engine.index(list(self.documents.values()))
+        
+        return True
+    
+    async def delete_document(self, doc_id: str) -> bool:
+        """Delete a document.
+        
+        Args:
+            doc_id: Document ID.
+            
+        Returns:
+            True if deleted.
+        """
+        if doc_id not in self.documents:
+            return False
+        
+        # Delete from persistence
+        await self.memory_store.delete(doc_id)
+        
+        # Update internal state
+        del self.documents[doc_id]
+        
+        # Reindex
+        await self.search_engine.index(list(self.documents.values()))
+        
+        return True
+    
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get memory statistics.
+        
+        Returns:
+            Dictionary with memory stats.
+        """
+        doc_ids = await self.memory_store.list_all()
+        
+        return {
+            'total_documents': len(self.documents),
+            'persisted_documents': len(doc_ids),
+            'embedding_dimension': self.embedding_provider.embedding_dimension,
+            'similarity_threshold': self.similarity_threshold
+        }
+
+
 __all__ = [
     "MemoryType",
     "MemoryItem",
     "EmbeddingModel",
     "RetentionPolicy",
     "EmbeddingProvider",
+    "SemanticMemoryManager",
     "MockEmbeddingProvider",
     "SemanticSearch",
     "SemanticMemory",

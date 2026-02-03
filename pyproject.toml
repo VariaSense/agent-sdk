@@ -74,20 +74,40 @@ line-length = 100
 target-version = ['py39']
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=62", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+packages = [
+    "agent_sdk",
+    "agent_sdk.agents",
+    "agent_sdk.cli",
+    "agent_sdk.config",
+    "agent_sdk.coordination",
+    "agent_sdk.core",
+    "agent_sdk.dashboard",
+    "agent_sdk.data_connectors",
+    "agent_sdk.execution",
+    "agent_sdk.finetuning",
+    "agent_sdk.human_in_the_loop",
+    "agent_sdk.llm",
+    "agent_sdk.memory",
+    "agent_sdk.observability",
+    "agent_sdk.planning",
+    "agent_sdk.plugins",
+    "agent_sdk.prompt_management",
+    "agent_sdk.routing",
+    "agent_sdk.server",
+]
 include-package-data = true
 
 [tool.setuptools.package-data]
-agent_sdk = [
-    "py.typed",
-]
+agent_sdk = ["py.typed"]
 
-# Include documentation and resources
-[tool.setuptools.data-files]
-"agent_sdk/docs" = [
-    "documents/*.md",
-    "documents/*.txt",
-]
+[project.urls]
+Documentation = "https://github.com/VariaSense/agent-sdk/blob/main/docs/INDEX.md"
+Repository = "https://github.com/VariaSense/agent-sdk"
+"Bug Tracker" = "https://github.com/VariaSense/agent-sdk/issues"
+
+[tool.bdist-wheel]
+universal = false

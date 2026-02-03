@@ -7,6 +7,11 @@ from agent_sdk.core.streaming import (
     StreamEvent,
     StreamEventCollector,
     StreamFormatter,
+    TokenCounter,
+    StreamCostCalculator,
+    StreamChunk,
+    StreamSession,
+    TokenStreamGenerator,
 )
 
 
@@ -193,6 +198,295 @@ def test_event_collector_events_sequence():
     assert len(events) == 8
     assert events[0].type == StreamEventType.AGENT_START
     assert events[-1].type == StreamEventType.AGENT_COMPLETE
+
+
+# ============================================================================
+# Token Streaming Tests
+# ============================================================================
+
+class TestTokenCounter:
+    """Test TokenCounter class."""
+    
+    def test_count_single_token(self):
+        """Test counting a single token."""
+        count = TokenCounter.count_tokens("hello")
+        assert count >= 1
+    
+    def test_count_empty_string(self):
+        """Test counting empty string."""
+        count = TokenCounter.count_tokens("")
+        assert count >= 1  # Minimum 1
+    
+    def test_count_long_text(self):
+        """Test counting long text."""
+        text = "a" * 1000
+        count = TokenCounter.count_tokens(text)
+        assert count > 100
+    
+    def test_count_batch(self):
+        """Test counting multiple tokens."""
+        texts = ["hello", "world", "test"]
+        counts = TokenCounter.count_tokens_batch(texts)
+        
+        assert len(counts) == 3
+        assert all(c >= 1 for c in counts)
+
+
+class TestStreamCostCalculator:
+    """Test StreamCostCalculator class."""
+    
+    def test_calculate_cost_known_model(self):
+        """Test cost calculation for known model."""
+        calc = StreamCostCalculator({
+            "gpt-4": {"input": 0.03, "output": 0.06}
+        })
+        
+        cost = calc.calculate_token_cost("gpt-4", 1000, is_input=False)
+        assert cost > 0
+    
+    def test_calculate_cost_unknown_model(self):
+        """Test cost calculation for unknown model."""
+        calc = StreamCostCalculator()
+        cost = calc.calculate_token_cost("unknown", 1000, is_input=False)
+        
+        assert cost == 0.0
+    
+    def test_input_vs_output_pricing(self):
+        """Test different pricing for input vs output."""
+        calc = StreamCostCalculator({
+            "gpt-4": {"input": 0.03, "output": 0.06}
+        })
+        
+        input_cost = calc.calculate_token_cost("gpt-4", 1000, is_input=True)
+        output_cost = calc.calculate_token_cost("gpt-4", 1000, is_input=False)
+        
+        assert input_cost < output_cost
+    
+    def test_add_model_pricing(self):
+        """Test adding new model pricing."""
+        calc = StreamCostCalculator()
+        calc.add_model_pricing("custom-model", 0.01, 0.02)
+        
+        cost = calc.calculate_token_cost("custom-model", 1000, is_input=False)
+        assert cost > 0
+
+
+class TestStreamChunk:
+    """Test StreamChunk class."""
+    
+    def test_create_chunk(self):
+        """Test creating a chunk."""
+        chunk = StreamChunk(content="hello", tokens=2, cost=0.001)
+        
+        assert chunk.content == "hello"
+        assert chunk.tokens == 2
+        assert chunk.cost == 0.001
+    
+    def test_chunk_timestamp(self):
+        """Test chunk has timestamp."""
+        chunk = StreamChunk(content="test")
+        assert chunk.timestamp is not None
+    
+    def test_chunk_to_dict(self):
+        """Test chunk conversion to dict."""
+        chunk = StreamChunk(content="hello", tokens=2, cost=0.001)
+        data = chunk.to_dict()
+        
+        assert data["content"] == "hello"
+        assert data["tokens"] == 2
+        assert "timestamp" in data
+    
+    def test_chunk_to_sse(self):
+        """Test chunk conversion to SSE format."""
+        chunk = StreamChunk(content="hello", tokens=2)
+        sse = chunk.to_sse()
+        
+        assert sse.startswith("data: ")
+        assert sse.endswith("\n\n")
+
+
+class TestStreamSession:
+    """Test StreamSession class."""
+    
+    def test_create_session(self):
+        """Test creating a session."""
+        session = StreamSession(session_id="test_001", model="gpt-4")
+        
+        assert session.session_id == "test_001"
+        assert session.model == "gpt-4"
+        assert session.start_time is not None
+    
+    def test_session_mark_complete(self):
+        """Test marking session complete."""
+        session = StreamSession(session_id="test", model="gpt-4")
+        
+        assert session.end_time is None
+        session.mark_complete()
+        assert session.end_time is not None
+    
+    def test_session_mark_error(self):
+        """Test marking session with error."""
+        session = StreamSession(session_id="test", model="gpt-4")
+        
+        session.mark_error("Test error")
+        
+        assert session.error == "Test error"
+        assert session.end_time is not None
+    
+    def test_session_to_dict(self):
+        """Test session conversion to dict."""
+        session = StreamSession(
+            session_id="test",
+            model="gpt-4",
+            total_tokens=100,
+            total_cost=0.006
+        )
+        session.mark_complete()
+        
+        data = session.to_dict()
+        
+        assert data["session_id"] == "test"
+        assert data["model"] == "gpt-4"
+        assert data["total_tokens"] == 100
+
+
+class TestTokenStreamGenerator:
+    """Test TokenStreamGenerator class."""
+    
+    def test_create_generator(self):
+        """Test creating a generator."""
+        gen = TokenStreamGenerator(
+            session_id="test_001",
+            model="gpt-4"
+        )
+        
+        assert gen.session.session_id == "test_001"
+        assert gen.session.model == "gpt-4"
+    
+    def test_stream_tokens_raw_format(self):
+        """Test streaming in raw format."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello", " ", "world"]
+        
+        chunks = list(gen.stream_tokens(iter(tokens), output_format="raw"))
+        
+        assert len(chunks) == len(tokens)
+        assert chunks == tokens
+    
+    def test_stream_tokens_json_format(self):
+        """Test streaming in JSON format."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello"]
+        
+        chunks = list(gen.stream_tokens(iter(tokens), output_format="json"))
+        
+        assert len(chunks) > 0
+        assert isinstance(chunks[0], str)
+    
+    def test_stream_tokens_sse_format(self):
+        """Test streaming in SSE format."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello"]
+        
+        chunks = list(gen.stream_tokens(iter(tokens), output_format="sse"))
+        
+        assert chunks[0].startswith("data: ")
+        assert chunks[0].endswith("\n\n")
+    
+    def test_stream_updates_session(self):
+        """Test that streaming updates session."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello", " ", "world"]
+        
+        list(gen.stream_tokens(iter(tokens)))
+        
+        session = gen.get_session()
+        
+        assert session.total_tokens > 0
+        assert session.chunk_count == len(tokens)
+        assert session.end_time is not None
+    
+    def test_stream_calculates_cost(self):
+        """Test that streaming calculates cost."""
+        calc = StreamCostCalculator({
+            "gpt-4": {"input": 0.03, "output": 0.06}
+        })
+        gen = TokenStreamGenerator(
+            session_id="test",
+            model="gpt-4",
+            cost_calculator=calc
+        )
+        
+        tokens = ["hello", "world"]
+        list(gen.stream_tokens(iter(tokens)))
+        
+        assert gen.session.total_cost > 0
+    
+    def test_stream_buffers_chunks(self):
+        """Test that chunks are buffered."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello", " ", "world"]
+        
+        list(gen.stream_tokens(iter(tokens)))
+        
+        chunks = gen.get_chunks()
+        
+        assert len(chunks) > 0
+        assert all(isinstance(c, StreamChunk) for c in chunks)
+    
+    def test_stream_get_content(self):
+        """Test getting concatenated content."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello", " ", "world"]
+        
+        list(gen.stream_tokens(iter(tokens)))
+        
+        content = gen.get_content()
+        
+        assert len(content) > 0
+    
+    def test_stream_error_handling(self):
+        """Test error handling during streaming."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        
+        def error_source():
+            yield "hello"
+            raise ValueError("Test error")
+        
+        with pytest.raises(ValueError):
+            list(gen.stream_tokens(error_source()))
+        
+        assert gen.session.error is not None
+    
+    def test_stream_get_summary(self):
+        """Test getting session summary."""
+        gen = TokenStreamGenerator(session_id="test", model="gpt-4")
+        tokens = ["hello", " ", "world"]
+        
+        list(gen.stream_tokens(iter(tokens)))
+        
+        summary = gen.get_summary()
+        
+        assert "session_id" in summary
+        assert "total_tokens" in summary
+        assert "total_cost" in summary
+
+
+@pytest.mark.asyncio
+async def test_async_stream_tokens():
+    """Test asynchronous token streaming."""
+    async def token_source():
+        for token in ["hello", " ", "world"]:
+            yield token
+            await asyncio.sleep(0.001)
+    
+    gen = TokenStreamGenerator(session_id="async_test", model="gpt-4")
+    
+    chunks = []
+    async for chunk in gen.stream_tokens_async(token_source()):
+        chunks.append(chunk)
+    
+    assert len(chunks) == 3
 
 
 if __name__ == "__main__":

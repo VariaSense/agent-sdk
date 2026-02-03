@@ -1,7 +1,7 @@
 """Tool schema generation and management for LLM understanding and validation."""
 
 import json
-from typing import Any, Callable, Dict, List, Optional, get_args, get_origin
+from typing import Any, Callable, Dict, List, Optional, Union, get_args, get_origin
 from pydantic import BaseModel, Field, create_model
 from enum import Enum
 
@@ -90,14 +90,22 @@ class SchemaGenerator:
                 schema["description"] = description
             return schema
         
-        # Handle Optional types
+        # Handle generic types (Optional, List, Dict, etc.)
         origin = get_origin(python_type)
         args = get_args(python_type)
         
-        if origin is type(Optional):
-            # Optional[X] = Union[X, None]
-            base_type = args[0] if args else str
-            return SchemaGenerator.python_type_to_json_schema(base_type, description)
+        # Check for Union type (includes Optional[X] which is Union[X, None])
+        if origin is Union:
+            # For Optional[X], extract the non-None type
+            non_none_types = [arg for arg in args if arg is not type(None)]
+            if len(non_none_types) == 1:
+                # This is Optional[X]
+                base_type = non_none_types[0]
+                return SchemaGenerator.python_type_to_json_schema(base_type, description)
+            # For Union with multiple non-None types, use first one
+            if non_none_types:
+                base_type = non_none_types[0]
+                return SchemaGenerator.python_type_to_json_schema(base_type, description)
         
         if origin is list:
             item_type = args[0] if args else dict
@@ -137,12 +145,58 @@ class SchemaGenerator:
         )
     
     @staticmethod
+    def _extract_parameter_descriptions(docstring: Optional[str]) -> Dict[str, str]:
+        """Extract parameter descriptions from function docstring."""
+        descriptions = {}
+        
+        if not docstring:
+            return descriptions
+        
+        lines = docstring.split('\n')
+        in_args = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Check if we're entering Args section
+            if stripped.startswith('Args:'):
+                in_args = True
+                continue
+            
+            # Exit Args section
+            if in_args and (stripped.startswith('Returns:') or 
+                           stripped.startswith('Raises:') or 
+                           stripped.startswith('Examples:')):
+                in_args = False
+                break
+            
+            # Parse parameter line
+            if in_args and ':' in stripped and not stripped.startswith('-'):
+                parts = stripped.split(':', 1)
+                if len(parts) == 2:
+                    param_name = parts[0].strip()
+                    param_desc = parts[1].strip()
+                    descriptions[param_name] = param_desc
+        
+        return descriptions
+    
+    @staticmethod
     def from_function(func: Callable, name: Optional[str] = None, description: Optional[str] = None) -> ToolSchema:
         """Generate ToolSchema from a Python function."""
         import inspect
+        from typing import get_type_hints
         
         name = name or func.__name__
         description = description or (func.__doc__ or "").strip().split("\n")[0]
+        
+        # Extract parameter descriptions from docstring
+        param_descriptions = SchemaGenerator._extract_parameter_descriptions(func.__doc__)
+        
+        # Get type hints
+        try:
+            type_hints = get_type_hints(func)
+        except Exception:
+            type_hints = {}
         
         sig = inspect.signature(func)
         parameters = {}
@@ -152,10 +206,18 @@ class SchemaGenerator:
             if param_name in ("self", "cls"):
                 continue
             
+            # Get type from hints or annotation
+            param_type = type_hints.get(param_name, param.annotation)
+            param_desc = param_descriptions.get(param_name, "")
+            
             param_schema = SchemaGenerator.python_type_to_json_schema(
-                param.annotation,
-                description=param.annotation.__doc__ if hasattr(param.annotation, '__doc__') else ""
+                param_type,
+                description=param_desc
             )
+            
+            # Add default value if present
+            if param.default != inspect.Parameter.empty:
+                param_schema["default"] = param.default
             
             parameters[param_name] = param_schema
             
@@ -313,6 +375,81 @@ def register_function_schema(
     return _global_registry.register_from_function(func, name, description)
 
 
+def auto_schema(func: Callable) -> Callable:
+    """
+    Decorator to auto-generate and register tool schema.
+    
+    Args:
+        func: Function to auto-schema
+        
+    Returns:
+        Original function (unchanged)
+        
+    Examples:
+        ```python
+        @auto_schema
+        def search(query: str, max_results: int = 10) -> List[str]:
+            \"\"\"Search for information.
+            
+            Args:
+                query: The search query string
+                max_results: Maximum number of results
+                
+            Returns:
+                List of search results
+            \"\"\"
+            pass
+        
+        # Schema is now registered and available for LLM
+        schema = get_schema_registry().get('search')
+        ```
+    """
+    register_function_schema(func)
+    return func
+
+
+def generate_tools_schema(tools: Dict[str, Callable], format: str = "openai") -> List[Dict[str, Any]]:
+    """
+    Generate schemas for multiple tools.
+    
+    Args:
+        tools: Dictionary mapping tool names to callables
+        format: Output format - "openai", "anthropic", or "json"
+        
+    Returns:
+        List of schemas in specified format
+        
+    Examples:
+        ```python
+        tools = {
+            'search': search_func,
+            'calculate': calc_func,
+        }
+        
+        schemas = generate_tools_schema(tools, format="openai")
+        # Use with LLM function calling
+        ```
+    """
+    schemas = []
+    
+    for name, func in tools.items():
+        try:
+            schema = SchemaGenerator.from_function(func, name=name)
+            
+            if format == "openai":
+                schemas.append(schema.to_openai_format())
+            elif format == "anthropic":
+                schemas.append(schema.to_anthropic_format())
+            elif format == "json":
+                schemas.append(schema.to_json_schema())
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+        except Exception as e:
+            print(f"Warning: Could not generate schema for tool '{name}': {e}")
+    
+    return schemas
+
+
 __all__ = [
     "ToolSchema",
     "SchemaGenerator",
@@ -321,4 +458,6 @@ __all__ = [
     "get_schema_registry",
     "register_tool_schema",
     "register_function_schema",
+    "auto_schema",
+    "generate_tools_schema",
 ]

@@ -10,6 +10,36 @@ from agent_sdk.memory.semantic_memory import (
     SemanticSearch,
     SemanticMemory,
     create_semantic_memory,
+    SemanticMemoryManager,
+)
+from agent_sdk.memory.embeddings import (
+    EmbeddingProvider as NewEmbeddingProvider,
+    OpenAIEmbeddings,
+    HuggingFaceEmbeddings,
+    LocalEmbeddings,
+)
+from agent_sdk.memory.compression import (
+    Message,
+    SummarizedMessage,
+    CompressionStrategy,
+    SummarizationEngine,
+    ImportanceSamplingEngine,
+    TokenBudgetEngine,
+    ClusteringEngine,
+    MemoryCompressionManager,
+)
+from agent_sdk.memory.semantic_search import (
+    SemanticSearchEngine,
+    RetrievalStrategy,
+    SimilaritySearch,
+    HybridSearch,
+    MMRSearch,
+)
+from agent_sdk.memory.persistence import (
+    MemoryStore,
+    FileSystemStore,
+    PostgresVectorStore,
+    PineconeStore,
 )
 
 __all__ = [
@@ -22,4 +52,17 @@ __all__ = [
     "SemanticSearch",
     "SemanticMemory",
     "create_semantic_memory",
-]
+    "SemanticMemoryManager",
+    "NewEmbeddingProvider",
+    "OpenAIEmbeddings",
+    "HuggingFaceEmbeddings",
+    "LocalEmbeddings",
+    "SemanticSearchEngine",
+    "RetrievalStrategy",
+    "SimilaritySearch",
+    "HybridSearch",
+    "MMRSearch",
+    "MemoryStore",
+    "FileSystemStore",
+    "PostgresVectorStore",
+    "PineconeStore",]
