@@ -144,6 +144,7 @@ class ExecutorAgent(Agent):
                                          "step_id": step.id,
                                          "tool": step.tool,
                                          "success": result.success})
+            self.context.apply_run_metadata(msg)
             self.context.short_term.append(msg)
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.step.complete", self.name,

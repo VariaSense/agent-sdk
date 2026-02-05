@@ -49,6 +49,15 @@ from agent_sdk.observability.profiler import (
 # Event bus and events
 from agent_sdk.observability.bus import EventBus
 from agent_sdk.observability.events import ObsEvent
+from agent_sdk.observability.stream_envelope import (
+    StreamChannel,
+    RunStatus,
+    RunMetadata,
+    SessionMetadata,
+    StreamEnvelope,
+    new_run_id,
+    new_session_id,
+)
 
 # OpenTelemetry
 from agent_sdk.observability.otel import ObservabilityManager
@@ -85,6 +94,13 @@ __all__ = [
     # Events
     "EventBus",
     "ObsEvent",
+    "StreamChannel",
+    "RunStatus",
+    "RunMetadata",
+    "SessionMetadata",
+    "StreamEnvelope",
+    "new_run_id",
+    "new_session_id",
     
     # OpenTelemetry
     "ObservabilityManager"

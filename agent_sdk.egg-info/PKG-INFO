@@ -4,9 +4,9 @@ Version: 0.1.0
 Summary: A modular agent framework with planning, execution, tools, rate limiting, observability, plugins, CLI, server, and dashboard.
 Author: Hongwei
 License: MIT
-Project-URL: Documentation, https://github.com/hongwel2/agent-sdk/blob/main/docs/INDEX.md
-Project-URL: Repository, https://github.com/hongwel2/agent-sdk
-Project-URL: Bug Tracker, https://github.com/hongwel2/agent-sdk/issues
+Project-URL: Documentation, https://github.com/VariaSense/agent-sdk/blob/main/docs/INDEX.md
+Project-URL: Repository, https://github.com/VariaSense/agent-sdk
+Project-URL: Bug Tracker, https://github.com/VariaSense/agent-sdk/issues
 Keywords: agent,llm,planning,execution,tools,framework
 Classifier: Development Status :: 4 - Beta
 Classifier: Intended Audience :: Developers

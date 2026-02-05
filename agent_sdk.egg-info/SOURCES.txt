@@ -88,6 +88,7 @@ agent_sdk/observability/metrics.py
 agent_sdk/observability/otel.py
 agent_sdk/observability/profiler.py
 agent_sdk/observability/sinks.py
+agent_sdk/observability/stream_envelope.py
 agent_sdk/planning/__init__.py
 agent_sdk/planning/plan_schema.py
 agent_sdk/planning/planner.py
@@ -177,6 +178,7 @@ tests/test_security.py
 tests/test_semantic_memory.py
 tests/test_semantic_search.py
 tests/test_session.py
+tests/test_stream_envelope.py
 tests/test_streaming.py
 tests/test_streaming_support.py
 tests/test_tool_schema.py

@@ -127,6 +127,7 @@ class PlannerAgent(Agent):
             indent=2,
         )
         reply = make_message("agent", content, metadata={"type": "plan"})
+        self.context.apply_run_metadata(reply)
         self.context.short_term.append(incoming)
         self.context.short_term.append(reply)
         return reply

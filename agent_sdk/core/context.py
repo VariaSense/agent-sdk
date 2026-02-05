@@ -20,10 +20,26 @@ class AgentContext:
     config: Dict[str, Any] = field(default_factory=dict)
     events: Optional[EventBus] = None
     rate_limiter: Optional[RateLimiter] = None
+    session_id: Optional[str] = None
+    run_id: Optional[str] = None
     
     # Memory management settings
     max_short_term: int = DEFAULT_MAX_SHORT_TERM_MESSAGES
     max_long_term: int = DEFAULT_MAX_LONG_TERM_MESSAGES
+
+    def set_run_context(self, session_id: Optional[str], run_id: Optional[str]) -> None:
+        """Set run/session identifiers for this context."""
+        if session_id is not None:
+            self.session_id = session_id
+        if run_id is not None:
+            self.run_id = run_id
+
+    def apply_run_metadata(self, message: Message) -> None:
+        """Attach run/session identifiers to a message if available."""
+        if self.session_id:
+            message.metadata.setdefault("session_id", self.session_id)
+        if self.run_id:
+            message.metadata.setdefault("run_id", self.run_id)
 
     def add_short_term_message(self, message: Message):
         """Add message to short-term memory with retention limit

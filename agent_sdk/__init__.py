@@ -17,6 +17,7 @@ from .config.rate_limit import RateLimitRule, RateLimiter
 from .observability.bus import EventBus
 from .observability.sinks import ConsoleSink, JSONLSink
 from .observability.events import ObsEvent
+from .storage import StorageBackend, SQLiteStorage
 
 from .plugins.loader import PluginLoader
 # Documentation access
@@ -45,6 +46,8 @@ __all__ = [
     "ConsoleSink",
     "JSONLSink",
     "ObsEvent",
+    "StorageBackend",
+    "SQLiteStorage",
     "PluginLoader",
     "docs",
 ]
