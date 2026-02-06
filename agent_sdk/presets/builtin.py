@@ -55,7 +55,16 @@ PRESETS = {
             "max_tokens": 2048,
         },
         tool_packs=["core", "rag"],
-        memory={"max_short_term": 400, "max_long_term": 8000},
+        memory={
+            "max_short_term": 400,
+            "max_long_term": 8000,
+            "rag": {
+                "enabled": True,
+                "vector_store": "sqlite",
+                "embedding_provider": "mock",
+                "include_citations": True,
+            },
+        },
     ),
     "assistant_multiagent": PresetDefinition(
         name="assistant_multiagent",

@@ -8,6 +8,7 @@ from agent_sdk.data_connectors.document import Document
 from agent_sdk.memory.persistence import (
     MemoryStore,
     FileSystemStore,
+    SQLiteVectorStore,
     PostgresVectorStore,
     PineconeStore,
 )
@@ -188,6 +189,29 @@ class TestPostgresVectorStore:
                 PostgresVectorStore(
                     connection_string="postgresql://localhost/db"
                 )
+
+
+class TestSQLiteVectorStore:
+    """Tests for SQLite vector store."""
+
+    @pytest.mark.asyncio
+    async def test_sqlite_save_load_delete(self, tmp_path, sample_document, sample_embedding):
+        db_path = tmp_path / "vectors.db"
+        store = SQLiteVectorStore(path=str(db_path))
+
+        await store.save(sample_document, sample_embedding)
+        loaded = await store.load(sample_document.doc_id)
+        assert loaded is not None
+        loaded_doc, loaded_embedding = loaded
+        assert loaded_doc.content == sample_document.content
+        assert loaded_embedding == sample_embedding
+
+        doc_ids = await store.list_all()
+        assert doc_ids == [sample_document.doc_id]
+
+        deleted = await store.delete(sample_document.doc_id)
+        assert deleted is True
+        assert await store.load(sample_document.doc_id) is None
 
 
 class TestPineconeStore:

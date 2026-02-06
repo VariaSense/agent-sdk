@@ -5,7 +5,7 @@ Implements message summarization and compression strategies to keep conversation
 context manageable while preserving important information.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -18,6 +18,23 @@ class CompressionStrategy(str, Enum):
     CLUSTERING = "clustering"
     IMPORTANCE_SAMPLING = "importance_sampling"
     TOKEN_BUDGET = "token_budget"
+
+
+@dataclass
+class CompactionPolicy:
+    """Policy thresholds for triggering compaction."""
+
+    max_messages: Optional[int] = None
+    max_tokens: Optional[int] = None
+
+    def should_compact(self, messages: List["Message"]) -> bool:
+        if self.max_messages is not None and len(messages) > self.max_messages:
+            return True
+        if self.max_tokens is not None:
+            total_tokens = sum(m.estimate_tokens() for m in messages)
+            if total_tokens > self.max_tokens:
+                return True
+        return False
 
 
 @dataclass
@@ -301,20 +318,34 @@ class ClusteringEngine(CompressionEngine):
 class MemoryCompressionManager:
     """Manages memory compression with multiple strategies."""
 
-    def __init__(self, strategy: CompressionStrategy = CompressionStrategy.SUMMARIZATION):
+    def __init__(
+        self,
+        strategy: CompressionStrategy = CompressionStrategy.SUMMARIZATION,
+        policy: Optional[CompactionPolicy] = None,
+        summarization_window_size: int = 5,
+        summary_hook: Optional[Callable[[SummarizedMessage], None]] = None,
+        auto_compact: bool = False,
+    ):
         """
         Initialize compression manager.
 
         Args:
             strategy: Compression strategy to use
+            policy: Compaction policy thresholds
+            summarization_window_size: Window size for summarization
+            summary_hook: Hook called for each summary created
+            auto_compact: Automatically compact when thresholds exceeded
         """
         self.strategy = strategy
         self.messages: List[Message] = []
         self.compressed_history: List[SummarizedMessage] = []
+        self.policy = policy or CompactionPolicy()
+        self.summary_hook = summary_hook
+        self.auto_compact = auto_compact
 
         # Create appropriate engine
         if strategy == CompressionStrategy.SUMMARIZATION:
-            self.engine = SummarizationEngine()
+            self.engine = SummarizationEngine(window_size=summarization_window_size)
         elif strategy == CompressionStrategy.IMPORTANCE_SAMPLING:
             self.engine = ImportanceSamplingEngine()
         elif strategy == CompressionStrategy.TOKEN_BUDGET:
@@ -326,6 +357,12 @@ class MemoryCompressionManager:
         """Add message to memory."""
         message.estimate_tokens()
         self.messages.append(message)
+        if self.auto_compact and self.should_compact():
+            await self.compress_memory()
+
+    def should_compact(self) -> bool:
+        """Check if compaction thresholds are exceeded."""
+        return self.policy.should_compact(self.messages)
 
     async def compress_memory(self) -> List[Message | SummarizedMessage]:
         """Compress current memory."""
@@ -338,8 +375,16 @@ class MemoryCompressionManager:
         for item in compressed:
             if isinstance(item, SummarizedMessage):
                 self.compressed_history.append(item)
+                if self.summary_hook:
+                    self.summary_hook(item)
 
         return compressed
+
+    async def compact_if_needed(self) -> List[Message | SummarizedMessage]:
+        """Compact memory if thresholds are exceeded."""
+        if self.should_compact():
+            return await self.compress_memory()
+        return self.messages.copy()
 
     async def get_compressed_context(self) -> str:
         """Get current memory as compressed context."""

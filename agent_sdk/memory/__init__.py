@@ -22,6 +22,7 @@ from agent_sdk.memory.compression import (
     Message,
     SummarizedMessage,
     CompressionStrategy,
+    CompactionPolicy,
     SummarizationEngine,
     ImportanceSamplingEngine,
     TokenBudgetEngine,
@@ -38,6 +39,7 @@ from agent_sdk.memory.semantic_search import (
 from agent_sdk.memory.persistence import (
     MemoryStore,
     FileSystemStore,
+    SQLiteVectorStore,
     PostgresVectorStore,
     PineconeStore,
 )
@@ -57,6 +59,15 @@ __all__ = [
     "OpenAIEmbeddings",
     "HuggingFaceEmbeddings",
     "LocalEmbeddings",
+    "Message",
+    "SummarizedMessage",
+    "CompressionStrategy",
+    "CompactionPolicy",
+    "SummarizationEngine",
+    "ImportanceSamplingEngine",
+    "TokenBudgetEngine",
+    "ClusteringEngine",
+    "MemoryCompressionManager",
     "SemanticSearchEngine",
     "RetrievalStrategy",
     "SimilaritySearch",
@@ -64,5 +75,7 @@ __all__ = [
     "MMRSearch",
     "MemoryStore",
     "FileSystemStore",
+    "SQLiteVectorStore",
     "PostgresVectorStore",
-    "PineconeStore",]
+    "PineconeStore",
+]

@@ -65,6 +65,7 @@ def test_run_endpoint_missing_api_key(client):
     assert response.status_code == 401
     data = response.json()
     assert "api key" in data.get("detail", "").lower()
+    assert "hint" in data
 
 
 def test_run_endpoint_invalid_api_key(client, monkeypatch):

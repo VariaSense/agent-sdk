@@ -41,6 +41,8 @@ class ExecutorAgent(Agent):
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.not_found", self.name,
                                                   {"tool": step.tool}))
+                self.context.events.emit(ObsEvent("tool.latency", self.name,
+                                                  {"tool": step.tool, "latency_ms": 0.0, "success": False}))
             return StepResult(step_id=step.id, success=False, output=None,
                               error=error_msg)
 
@@ -48,6 +50,8 @@ class ExecutorAgent(Agent):
             self.context.events.emit(ObsEvent("executor.tool.call", self.name,
                                               {"tool": step.tool, "inputs": step.inputs}))
 
+        start = time.time()
+        success = False
         try:
             # Validate inputs
             if step.inputs is None:
@@ -56,6 +60,7 @@ class ExecutorAgent(Agent):
                 raise ToolError(f"Tool inputs must be a dictionary, got {type(step.inputs)}")
             
             output = tool(step.inputs)
+            success = True
             
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.result", self.name,
@@ -78,6 +83,12 @@ class ExecutorAgent(Agent):
                 self.context.events.emit(ObsEvent("executor.tool.error", self.name,
                                                   {"tool": step.tool, "error": str(e), "error_type": type(e).__name__}))
             return StepResult(step_id=step.id, success=False, output=None, error=str(e))
+        finally:
+            latency_ms = (time.time() - start) * 1000
+            if self.context.events:
+                self.context.events.emit(ObsEvent("tool.latency", self.name,
+                                                  {"tool": step.tool, "latency_ms": latency_ms,
+                                                   "success": success}))
 
     def _summarize_step(self, task: str, step: PlanStep, result: StepResult) -> str:
         """Summarize step result with retry logic"""
@@ -187,12 +198,16 @@ class ExecutorAgent(Agent):
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.not_found", self.name,
                                                   {"tool": step.tool}))
+                self.context.events.emit(ObsEvent("tool.latency", self.name,
+                                                  {"tool": step.tool, "latency_ms": 0.0, "success": False}))
             return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
         
         if self.context.events:
             self.context.events.emit(ObsEvent("executor.tool.call", self.name,
                                               {"tool": step.tool, "inputs": step.inputs}))
         
+        start = time.time()
+        success = False
         try:
             # Validate inputs
             if step.inputs is None:
@@ -201,6 +216,7 @@ class ExecutorAgent(Agent):
                 raise ToolError(f"Tool inputs must be a dictionary, got {type(step.inputs)}")
             
             output = await tool.call_async(step.inputs)
+            success = True
             
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.result", self.name,
@@ -223,6 +239,12 @@ class ExecutorAgent(Agent):
                 self.context.events.emit(ObsEvent("executor.tool.error", self.name,
                                                   {"tool": step.tool, "error": str(e), "error_type": type(e).__name__}))
             return StepResult(step_id=step.id, success=False, output=None, error=str(e))
+        finally:
+            latency_ms = (time.time() - start) * 1000
+            if self.context.events:
+                self.context.events.emit(ObsEvent("tool.latency", self.name,
+                                                  {"tool": step.tool, "latency_ms": latency_ms,
+                                                   "success": success}))
 
     async def _summarize_step_async(self, task: str, step: PlanStep, result: StepResult) -> str:
         """Summarize step result asynchronously with retry logic"""

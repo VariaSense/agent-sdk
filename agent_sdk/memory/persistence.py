@@ -3,6 +3,7 @@
 import json
 import os
 import pickle
+import sqlite3
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from agent_sdk.data_connectors.document import Document, Chunk
@@ -167,6 +168,77 @@ class FileSystemStore(MemoryStore):
                 doc_ids.append(doc_id)
         
         return sorted(doc_ids)
+
+
+class SQLiteVectorStore(MemoryStore):
+    """SQLite-backed vector memory storage."""
+
+    def __init__(self, path: str = "vector_store.db"):
+        self.path = path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vector_store (
+                    doc_id TEXT PRIMARY KEY,
+                    document_json TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+    async def save(self, document: Document, embedding: List[float]) -> None:
+        payload = json.dumps(document.to_dict(), default=str)
+        embedding_json = json.dumps(embedding)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO vector_store (doc_id, document_json, embedding_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    document_json = excluded.document_json,
+                    embedding_json = excluded.embedding_json
+                """,
+                (document.doc_id, payload, embedding_json),
+            )
+            conn.commit()
+
+    async def load(self, doc_id: str) -> Optional[tuple]:
+        with sqlite3.connect(self.path) as conn:
+            cur = conn.execute(
+                "SELECT document_json, embedding_json FROM vector_store WHERE doc_id = ?",
+                (doc_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            doc_json, embedding_json = row
+            doc_data = json.loads(doc_json)
+            document = Document(
+                content=doc_data["content"],
+                metadata=doc_data.get("metadata", {}),
+                source=doc_data.get("source"),
+                doc_id=doc_data.get("doc_id", doc_id),
+            )
+            embedding = json.loads(embedding_json)
+            return (document, embedding)
+
+    async def delete(self, doc_id: str) -> bool:
+        with sqlite3.connect(self.path) as conn:
+            cur = conn.execute(
+                "DELETE FROM vector_store WHERE doc_id = ?",
+                (doc_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    async def list_all(self) -> List[str]:
+        with sqlite3.connect(self.path) as conn:
+            cur = conn.execute("SELECT doc_id FROM vector_store ORDER BY doc_id")
+            return [row[0] for row in cur.fetchall()]
 
 
 class PostgresVectorStore(MemoryStore):

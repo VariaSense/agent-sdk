@@ -1,4 +1,5 @@
 import asyncio
+import os
 import typer
 import yaml
 
@@ -14,6 +15,61 @@ tools_cmd = typer.Typer(help="Inspect tools")
 agents_cmd = typer.Typer(help="Inspect agents")
 init_cmd = typer.Typer(help="Project scaffolding")
 serve_cmd = typer.Typer(help="Serve agents over HTTP")
+doctor_cmd = typer.Typer(help="Diagnostics and health checks")
+
+
+def collect_doctor_checks(config: str) -> list[dict]:
+    checks = []
+
+    if not os.path.exists(config):
+        checks.append({"name": "config.exists", "status": "fail", "detail": f"{config} not found"})
+        return checks
+    checks.append({"name": "config.exists", "status": "ok", "detail": config})
+
+    try:
+        with open(config, "r") as f:
+            raw_cfg = yaml.safe_load(f) or {}
+        load_config(config, MockLLMClient())
+        checks.append({"name": "config.load", "status": "ok", "detail": "valid"})
+    except Exception as exc:
+        checks.append({"name": "config.load", "status": "fail", "detail": str(exc)})
+        return checks
+
+    model_providers = []
+    for model in (raw_cfg.get("models") or {}).values():
+        provider = (model or {}).get("provider")
+        if provider:
+            model_providers.append(provider)
+
+    if "openai" in model_providers and not os.getenv("OPENAI_API_KEY"):
+        checks.append({"name": "env.openai_api_key", "status": "warn", "detail": "OPENAI_API_KEY missing"})
+    else:
+        checks.append({"name": "env.openai_api_key", "status": "ok", "detail": "present or not required"})
+
+    tool_count = len(GLOBAL_TOOL_REGISTRY.tools)
+    if tool_count == 0:
+        checks.append({"name": "tools.registered", "status": "warn", "detail": "no tools registered"})
+    else:
+        checks.append({"name": "tools.registered", "status": "ok", "detail": f"{tool_count} tools"})
+
+    db_path = os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
+    db_dir = os.path.dirname(db_path) or "."
+    if os.path.isdir(db_dir) and os.access(db_dir, os.W_OK):
+        checks.append({"name": "storage.db_path", "status": "ok", "detail": db_path})
+    else:
+        checks.append({"name": "storage.db_path", "status": "warn", "detail": f"Not writable: {db_dir}"})
+
+    log_path = os.getenv("AGENT_SDK_RUN_LOG_PATH")
+    if log_path:
+        log_dir = os.path.dirname(log_path) or "."
+        if os.path.isdir(log_dir) and os.access(log_dir, os.W_OK):
+            checks.append({"name": "logs.run_log_path", "status": "ok", "detail": log_path})
+        else:
+            checks.append({"name": "logs.run_log_path", "status": "warn", "detail": f"Not writable: {log_dir}"})
+    else:
+        checks.append({"name": "logs.run_log_path", "status": "warn", "detail": "AGENT_SDK_RUN_LOG_PATH not set"})
+
+    return checks
 
 @run_cmd.command("task")
 def run_task(task: str, config: str = "config.yaml", preset: str = ""):
@@ -104,3 +160,11 @@ def serve_http(config: str = "config.yaml", host: str = "0.0.0.0", port: int = 9
     loader.load()
     app = create_app(config)
     uvicorn.run(app, host=host, port=port)
+
+
+@doctor_cmd.command("check")
+def doctor_check(config: str = "config.yaml"):
+    checks = collect_doctor_checks(config)
+    for check in checks:
+        status = check["status"].upper()
+        typer.echo(f"[{status}] {check['name']}: {check['detail']}")

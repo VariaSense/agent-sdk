@@ -4,7 +4,7 @@ from agent_sdk.memory.compression import (
     Message, SummarizedMessage, CompressionStrategy,
     SummarizationEngine, ImportanceSamplingEngine,
     TokenBudgetEngine, ClusteringEngine,
-    MemoryCompressionManager,
+    MemoryCompressionManager, CompactionPolicy,
 )
 
 
@@ -157,3 +157,34 @@ class TestMemoryCompressionManager:
 
         await manager.clear()
         assert len(manager.messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_with_summary_hook(self, sample_messages):
+        summaries = []
+
+        def hook(summary):
+            summaries.append(summary)
+
+        manager = MemoryCompressionManager(
+            strategy=CompressionStrategy.SUMMARIZATION,
+            summarization_window_size=2,
+            policy=CompactionPolicy(max_messages=2),
+            summary_hook=hook,
+            auto_compact=True,
+        )
+
+        for msg in sample_messages[:3]:
+            await manager.add_message(msg)
+
+        assert len(manager.compressed_history) > 0
+        assert len(summaries) == len(manager.compressed_history)
+
+    @pytest.mark.asyncio
+    async def test_compaction_policy_max_tokens(self):
+        manager = MemoryCompressionManager(
+            policy=CompactionPolicy(max_tokens=5),
+        )
+        await manager.add_message(Message("short", "user"))
+        await manager.add_message(Message("this is a longer message", "user"))
+
+        assert manager.should_compact() is True

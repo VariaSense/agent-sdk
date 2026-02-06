@@ -21,6 +21,13 @@ def test_get_preset_config_shape():
     assert "memory" in config
 
 
+def test_rag_preset_has_citations_enabled():
+    config = get_preset_config("assistant_rag")
+    rag_cfg = config["memory"].get("rag", {})
+    assert rag_cfg.get("enabled") is True
+    assert rag_cfg.get("include_citations") is True
+
+
 def test_get_preset_unknown_raises():
     with pytest.raises(KeyError):
         get_preset("missing")

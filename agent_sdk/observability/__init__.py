@@ -61,6 +61,13 @@ from agent_sdk.observability.stream_envelope import (
 
 # OpenTelemetry
 from agent_sdk.observability.otel import ObservabilityManager
+from agent_sdk.observability.run_logs import (
+    RunLogExporter,
+    JSONLFileExporter,
+    StdoutExporter,
+    create_run_log_exporters,
+)
+from agent_sdk.observability.metrics_pipeline import ObsMetricsSink
 
 __all__ = [
     # Cost tracking
@@ -101,6 +108,11 @@ __all__ = [
     "StreamEnvelope",
     "new_run_id",
     "new_session_id",
+    "RunLogExporter",
+    "JSONLFileExporter",
+    "StdoutExporter",
+    "create_run_log_exporters",
+    "ObsMetricsSink",
     
     # OpenTelemetry
     "ObservabilityManager"

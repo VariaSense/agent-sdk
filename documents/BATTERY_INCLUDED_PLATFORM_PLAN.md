@@ -265,34 +265,34 @@ Estimate: 3-5 days.
 
 ## Phase 2 Backlog (Prioritized, Rough Estimates)
 
-1. Observability upgrade: structured JSONL run logs + exporter interface (stdout/file).  
+1. Observability upgrade: structured JSONL run logs + exporter interface (stdout/file). **(Completed)**  
 Estimate: 3-5 days.
 
-2. Metrics pipeline: latency, token usage, tool error rates (collector + emitters).  
+2. Metrics pipeline: latency, token usage, tool error rates (collector + emitters). **(Completed)**  
 Estimate: 3-4 days.
 
-3. Deterministic mock LLM + tool mocks for tests.  
+3. Deterministic mock LLM + tool mocks for tests. **(Completed)**  
 Estimate: 3-4 days.
 
-4. Streaming regression tests (ordering, replay, disconnect handling).  
+4. Streaming regression tests (ordering, replay, disconnect handling). **(Completed)**  
 Estimate: 3-5 days.
 
-5. Tool schema regression tests (validation + versioning).  
+5. Tool schema regression tests (validation + versioning). **(Completed)**  
 Estimate: 2-3 days.
 
-6. Memory compaction policies (configurable thresholds + summarization hooks).  
+6. Memory compaction policies (configurable thresholds + summarization hooks). **(Completed)**  
 Estimate: 4-6 days.
 
-7. Local vector store adapter (SQLite or embedded) + embedding provider interface.  
+7. Local vector store adapter (SQLite or embedded) + embedding provider interface. **(Completed)**  
 Estimate: 5-8 days.
 
-8. RAG preset improvements (end-to-end retrieval + citation metadata).  
+8. RAG preset improvements (end-to-end retrieval + citation metadata). **(Completed)**  
 Estimate: 3-5 days.
 
-9. CLI diagnostics: `agent-sdk doctor` for config/health checks.  
+9. CLI diagnostics: `agent-sdk doctor` for config/health checks. **(Completed)**  
 Estimate: 2-3 days.
 
-10. Dev UX polish: consistent error messages + actionable hints.  
+10. Dev UX polish: consistent error messages + actionable hints. **(Completed)**  
 Estimate: 2-3 days.
 
 ---

@@ -12,7 +12,12 @@ from typing import Any, Callable, Dict, List
 from urllib.request import Request, urlopen
 
 from agent_sdk.core.tools import Tool, ToolRegistry, GLOBAL_TOOL_REGISTRY
+from agent_sdk.data_connectors.document import Document
+from agent_sdk.memory.embeddings import LocalEmbeddings
+from agent_sdk.memory.semantic_memory import MockEmbeddingProvider
+from agent_sdk.memory.persistence import SQLiteVectorStore
 
+SCHEMA_VERSION = "1.0"
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -69,9 +74,106 @@ def _time_utc(_: Dict[str, Any]) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _vector_search_stub(inputs: Dict[str, Any]) -> str:
+def _run_async(coro):
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    return asyncio.run(coro)
+
+
+def _select_embedder() -> Any:
+    provider = os.getenv("AGENT_SDK_VECTOR_EMBEDDINGS", "mock").lower()
+    if provider == "local":
+        return LocalEmbeddings()
+    return MockEmbeddingProvider()
+
+
+def _cosine_similarity(vec1, vec2) -> float:
+    import math
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return dot / (norm1 * norm2)
+
+
+def _vector_search(inputs: Dict[str, Any]) -> Dict[str, Any]:
     query = inputs.get("query", "")
-    return f"vector search not configured (query={query})"
+    top_k = int(inputs.get("top_k", 3))
+    documents_input = inputs.get("documents")
+
+    if not query:
+        raise ValueError("query is required")
+
+    embedder = _select_embedder()
+    if isinstance(embedder, LocalEmbeddings):
+        query_vec = embedder.embed_text_sync(query)
+    else:
+        query_vec = embedder.embed(query)
+
+    documents: List[Document] = []
+    if documents_input:
+        for idx, item in enumerate(documents_input):
+            documents.append(
+                Document(
+                    content=item.get("content", ""),
+                    metadata=item.get("metadata", {}),
+                    source=item.get("source", "user"),
+                    doc_id=item.get("doc_id", f"doc_{idx}"),
+                )
+            )
+    else:
+        store_path = os.getenv("AGENT_SDK_VECTOR_DB_PATH", "vector_store.db")
+        store = SQLiteVectorStore(store_path)
+        doc_ids = _run_async(store.list_all())
+        for doc_id in doc_ids:
+            loaded = _run_async(store.load(doc_id))
+            if loaded:
+                documents.append(loaded[0])
+
+    matches = []
+    for doc in documents:
+        if isinstance(embedder, LocalEmbeddings):
+            doc_vec = embedder.embed_text_sync(doc.content)
+        else:
+            doc_vec = embedder.embed(doc.content)
+        score = _cosine_similarity(query_vec, doc_vec)
+        matches.append((doc, score))
+
+    matches.sort(key=lambda item: item[1], reverse=True)
+    top_matches = matches[:top_k]
+
+    citations = []
+    results = []
+    for doc, score in top_matches:
+        excerpt = doc.content[:160]
+        citations.append(
+            {
+                "doc_id": doc.doc_id,
+                "source": doc.source,
+                "score": score,
+                "excerpt": excerpt,
+            }
+        )
+        results.append(
+            {
+                "doc_id": doc.doc_id,
+                "content": doc.content,
+                "metadata": doc.metadata,
+                "source": doc.source,
+                "score": score,
+            }
+        )
+
+    return {
+        "matches": results,
+        "citations": citations,
+    }
 
 
 TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
@@ -81,6 +183,7 @@ TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
         func=_filesystem_read,
         schema={
             "name": "filesystem.read",
+            "version": SCHEMA_VERSION,
             "inputs": {"path": "string"},
             "outputs": "string",
         },
@@ -91,6 +194,7 @@ TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
         func=_filesystem_write,
         schema={
             "name": "filesystem.write",
+            "version": SCHEMA_VERSION,
             "inputs": {"path": "string", "content": "string"},
             "outputs": "string",
         },
@@ -101,6 +205,7 @@ TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
         func=_http_fetch,
         schema={
             "name": "http.fetch",
+            "version": SCHEMA_VERSION,
             "inputs": {"url": "string"},
             "outputs": "string",
         },
@@ -111,6 +216,7 @@ TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
         func=_calculator,
         schema={
             "name": "calculator",
+            "version": SCHEMA_VERSION,
             "inputs": {"operation": "string", "a": "number", "b": "number"},
             "outputs": "number",
         },
@@ -119,16 +225,17 @@ TOOL_DEFINITIONS: Dict[str, ToolDefinition] = {
         name="time",
         description="Get current UTC timestamp.",
         func=_time_utc,
-        schema={"name": "time", "inputs": {}, "outputs": "string"},
+        schema={"name": "time", "version": SCHEMA_VERSION, "inputs": {}, "outputs": "string"},
     ),
     "vector.search": ToolDefinition(
         name="vector.search",
         description="Search semantic memory (stub).",
-        func=_vector_search_stub,
+        func=_vector_search,
         schema={
             "name": "vector.search",
-            "inputs": {"query": "string"},
-            "outputs": "string",
+            "version": SCHEMA_VERSION,
+            "inputs": {"query": "string", "top_k": "number", "documents": "array"},
+            "outputs": "object",
         },
     ),
 }
@@ -154,4 +261,5 @@ def register_builtin_tool_packs(
             "name": definition.name,
             "description": definition.description,
             "schema": definition.schema,
+            "schema_version": definition.schema.get("version", SCHEMA_VERSION),
         }

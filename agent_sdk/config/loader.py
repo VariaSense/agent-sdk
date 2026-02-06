@@ -6,6 +6,8 @@ from agent_sdk import (
     PlannerAgent, ExecutorAgent,
     AgentContext, GLOBAL_TOOL_REGISTRY,
 )
+from agent_sdk.observability.bus import EventBus
+from agent_sdk.observability.metrics_pipeline import ObsMetricsSink
 from agent_sdk.llm.base import LLMClient
 from agent_sdk.validators import ConfigSchema
 from agent_sdk.exceptions import ConfigError
@@ -68,18 +70,26 @@ def load_config(path: str, llm_client: LLMClient):
     except KeyError as e:
         raise ConfigError(f"Missing required agent configuration: {e}")
 
+    metrics_enabled = os.getenv("AGENT_SDK_METRICS_ENABLED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    events = EventBus([ObsMetricsSink()]) if metrics_enabled else None
+
     # Create contexts
     planner_context = AgentContext(
         tools=tools,
         model_config=models[planner_cfg.model],
-        events=None,
+        events=events,
         rate_limiter=rate_limiter,
     )
 
     executor_context = AgentContext(
         tools=tools,
         model_config=models[executor_cfg.model],
-        events=None,
+        events=events,
         rate_limiter=rate_limiter,
     )
 

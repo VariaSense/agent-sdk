@@ -24,10 +24,14 @@ from agent_sdk.observability.stream_envelope import (
     new_run_id,
     new_session_id,
 )
+from agent_sdk.observability.run_logs import create_run_log_exporters
 from agent_sdk.server.run_store import RunEventStore
 from agent_sdk.storage.sqlite import SQLiteStorage
 
 logger = logging.getLogger(__name__)
+
+def _hinted_detail(message: str, hint: str) -> str:
+    return f"{message} Hint: {hint}"
 
 
 def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = None):
@@ -44,7 +48,19 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         loader.load()
         planner, executor = load_config(config_path, MockLLMClient())
         runtime = PlannerExecutorRuntime(planner, executor)
-        run_store = RunEventStore()
+        log_path = os.getenv("AGENT_SDK_RUN_LOG_PATH")
+        log_stdout = os.getenv("AGENT_SDK_RUN_LOG_STDOUT", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        run_store = RunEventStore(
+            exporters=create_run_log_exporters(
+                path=log_path,
+                emit_stdout=log_stdout,
+            )
+        )
         db_path = storage_path or os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
         storage = SQLiteStorage(db_path)
         logger.info("Application initialized successfully")
@@ -100,11 +116,20 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             if not api_key:
                 return JSONResponse(
                     status_code=401,
-                    content={"detail": "Missing API key in X-API-Key header"},
+                    content={
+                        "detail": "Missing API key in X-API-Key header",
+                        "hint": "Set API_KEY env var or pass X-API-Key header.",
+                    },
                 )
             manager = get_api_key_manager()
             if not manager.verify_key(api_key):
-                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": "Invalid API key",
+                        "hint": "Ensure X-API-Key matches the API_KEY env var.",
+                    },
+                )
         return await call_next(request)
 
     @app.get("/", tags=["UI"])
@@ -145,7 +170,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             logger.error(f"Readiness check failed: {e}")
             raise HTTPException(
                 status_code=503,
-                detail=f"Service not ready: {str(e)}"
+                detail=_hinted_detail(
+                    f"Service not ready: {str(e)}",
+                    "Verify config.yaml and plugin initialization.",
+                ),
             )
 
     # Task Execution Endpoint
@@ -211,18 +239,30 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         except ValidationError as e:
             logger.warning(f"Validation error: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail=_hinted_detail(
+                    f"Invalid input: {str(e)}",
+                    "Check required fields and types in the request payload.",
+                ),
+            )
         except AgentSDKException as e:
             logger.error(f"Agent SDK error: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Task execution failed: {str(e)}"
+                detail=_hinted_detail(
+                    f"Task execution failed: {str(e)}",
+                    "Review logs for stack trace and configuration issues.",
+                ),
             )
         except Exception as e:
             logger.error(f"Unexpected error during task execution: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail="Internal server error"
+                detail=_hinted_detail(
+                    "Internal server error",
+                    "Check server logs for details.",
+                ),
             )
 
     # Streaming Task Execution Endpoint

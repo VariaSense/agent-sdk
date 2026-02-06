@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional
 
 from agent_sdk.observability.stream_envelope import StreamEnvelope, StreamChannel
+from agent_sdk.observability.run_logs import RunLogExporter
 
 
 @dataclass
@@ -20,10 +21,16 @@ class RunBuffer:
 
 
 class RunEventStore:
-    def __init__(self, max_events: int = 1000, queue_size: int = 200):
+    def __init__(
+        self,
+        max_events: int = 1000,
+        queue_size: int = 200,
+        exporters: Optional[List[RunLogExporter]] = None,
+    ):
         self._runs: Dict[str, RunBuffer] = {}
         self._max_events = max_events
         self._queue_size = queue_size
+        self._exporters = exporters or []
 
     def create_run(self, run_id: str) -> None:
         if run_id in self._runs:
@@ -42,6 +49,12 @@ class RunEventStore:
             self.create_run(run_id)
         buffer = self._runs[run_id]
         buffer.history.append(event)
+        for exporter in self._exporters:
+            try:
+                exporter.emit(event)
+            except Exception:
+                # Exporter failures should not break streaming.
+                pass
         try:
             buffer.queue.put_nowait(event)
         except asyncio.QueueFull:
