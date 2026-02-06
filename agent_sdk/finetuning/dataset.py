@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import hashlib
 from enum import Enum
@@ -107,7 +107,7 @@ class TrainingDataset:
         self.name = name
         self.max_tokens = max_tokens
         self.examples: List[TrainingExample] = examples or []
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self._hash_to_example: Dict[str, TrainingExample] = {}
         self._build_index()
     

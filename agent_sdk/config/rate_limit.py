@@ -16,7 +16,25 @@ class RateLimitRule:
     scope: str = "model"  # "model", "agent", "tenant"
 
 class RateLimiter:
-    def __init__(self, rules: List[RateLimitRule]):
+    def __init__(
+        self,
+        rules: Optional[List[RateLimitRule]] = None,
+        max_requests: Optional[int] = None,
+        window_seconds: int = 60,
+    ):
+        if rules is None:
+            if max_requests is None:
+                rules = []
+            else:
+                rules = [
+                    RateLimitRule(
+                        name="default",
+                        max_calls=max_requests,
+                        window_seconds=window_seconds,
+                        scope="global",
+                    )
+                ]
+
         self.rules = rules
         self.call_history: Dict[str, deque] = defaultdict(deque)
         self.token_history: Dict[str, deque[Tuple[float, int]]] = defaultdict(deque)
@@ -31,7 +49,13 @@ class RateLimiter:
             return f"tenant:{tenant}"
         return "global"
 
-    def check(self, agent: str, model: str, tokens: int, tenant: str = "default"):
+    def check(
+        self,
+        agent: str = "default",
+        model: str = "default",
+        tokens: int = 0,
+        tenant: str = "default",
+    ) -> bool:
         """Check if rate limits are exceeded and record the usage
         
         Args:
@@ -45,6 +69,9 @@ class RateLimiter:
         """
         from agent_sdk.exceptions import RateLimitError
         
+        if not self.rules:
+            return True
+
         with self._lock:  # Thread-safe operation
             now = time.time()
             
@@ -89,3 +116,49 @@ class RateLimiter:
                 key = self._key(rule, agent, model, tenant)
                 self.call_history[key].append(now)
                 self.token_history[key].append((now, tokens))
+
+        return True
+
+    def reset(self) -> None:
+        """Reset all rate limit state."""
+        with self._lock:
+            self.call_history.clear()
+            self.token_history.clear()
+
+    def _primary_rule(self) -> Optional[RateLimitRule]:
+        return self.rules[0] if self.rules else None
+
+    def get_remaining(
+        self, agent: str = "default", model: str = "default", tenant: str = "default"
+    ) -> Optional[int]:
+        """Get remaining calls for the primary rule."""
+        rule = self._primary_rule()
+        if rule is None or rule.max_calls is None:
+            return None
+        key = self._key(rule, agent, model, tenant)
+        with self._lock:
+            now = time.time()
+            while self.call_history[key] and now - self.call_history[key][0] > rule.window_seconds:
+                self.call_history[key].popleft()
+            remaining = rule.max_calls - len(self.call_history[key])
+            return max(0, remaining)
+
+    def get_status(
+        self, agent: str = "default", model: str = "default", tenant: str = "default"
+    ) -> Dict[str, Optional[int]]:
+        """Get status for the primary rule."""
+        rule = self._primary_rule()
+        max_requests = rule.max_calls if rule else None
+        window_seconds = rule.window_seconds if rule else None
+        remaining = self.get_remaining(agent=agent, model=model, tenant=tenant)
+        current_requests = None
+        if rule is not None:
+            key = self._key(rule, agent, model, tenant)
+            current_requests = len(self.call_history[key])
+
+        return {
+            "max_requests": max_requests,
+            "window_seconds": window_seconds,
+            "current_requests": current_requests,
+            "remaining": remaining,
+        }

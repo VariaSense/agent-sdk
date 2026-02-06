@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -57,7 +57,7 @@ class AgentSession:
     session_id: str
     name: str = "default"
     status: SessionStatus = SessionStatus.CREATED
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     
@@ -160,7 +160,7 @@ class SessionManager:
             return None
         
         session.status = SessionStatus.STARTED
-        session.started_at = datetime.utcnow()
+        session.started_at = datetime.now(timezone.utc)
         
         return session
     
@@ -218,8 +218,8 @@ class SessionManager:
             status=status,
             result=result,
             error=error,
-            start_time=datetime.utcnow(),
-            end_time=datetime.utcnow(),
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc),
             execution_time_ms=execution_time_ms,
             tokens_used=tokens_used,
             cost=cost
@@ -251,7 +251,7 @@ class SessionManager:
             return None
         
         session.status = SessionStatus.COMPLETED
-        session.completed_at = datetime.utcnow()
+        session.completed_at = datetime.now(timezone.utc)
         session.aggregated_result = aggregated_result
         if conflicts:
             session.conflicts = conflicts
@@ -281,7 +281,7 @@ class SessionManager:
             return None
         
         session.status = SessionStatus.FAILED
-        session.completed_at = datetime.utcnow()
+        session.completed_at = datetime.now(timezone.utc)
         session.metadata["error"] = error
         
         if session_id in self.active_sessions:
@@ -304,7 +304,7 @@ class SessionManager:
             return None
         
         session.status = SessionStatus.CANCELLED
-        session.completed_at = datetime.utcnow()
+        session.completed_at = datetime.now(timezone.utc)
         
         if session_id in self.active_sessions:
             self.active_sessions.remove(session_id)

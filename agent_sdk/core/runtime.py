@@ -31,6 +31,8 @@ class PlannerExecutorRuntime:
         self.planner.context.apply_run_metadata(task_msg)
         plan_msg = self.planner.step(task_msg)
         exec_msg = self.executor.step(plan_msg)
+        self.planner.context.apply_run_metadata(plan_msg)
+        self.executor.context.apply_run_metadata(exec_msg)
         return [plan_msg, exec_msg]
 
     async def run_async(
@@ -44,4 +46,6 @@ class PlannerExecutorRuntime:
         self.planner.context.apply_run_metadata(task_msg)
         plan_msg = await self.planner.step_async(task_msg)
         exec_msg = await self.executor.step_async(plan_msg)
+        self.planner.context.apply_run_metadata(plan_msg)
+        self.executor.context.apply_run_metadata(exec_msg)
         return [plan_msg, exec_msg]

@@ -168,10 +168,13 @@ class ReActPlan:
         self.steps.append(step)
 
     def add_thinking(
-        self, content: str, reasoning: Optional[str] = None
+        self,
+        content: str,
+        reasoning: Optional[str] = None,
+        confidence: float = 1.0,
     ) -> ReActStep:
         """Add a thinking step."""
-        step = ReActStep.think(content, reasoning)
+        step = ReActStep.think(content, reasoning, confidence=confidence)
         self.add_step(step)
         return step
 
@@ -377,8 +380,9 @@ class ReActExecutor:
             else 0
         )
 
+        step_types = {step.step_type for step in plan.steps}
         return {
-            "total_steps": len(plan.steps),
+            "total_steps": len(step_types),
             "thinking_steps": len(thinking_steps),
             "action_steps": len(action_steps),
             "observation_steps": len(observation_steps),

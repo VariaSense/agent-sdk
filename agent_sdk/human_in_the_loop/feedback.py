@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import uuid
 
@@ -38,7 +38,7 @@ class HumanFeedback:
     rating: Optional[int] = None
     suggested_action: Optional[str] = None
     annotator: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def is_positive(self) -> bool:
         """Check if feedback is positive."""

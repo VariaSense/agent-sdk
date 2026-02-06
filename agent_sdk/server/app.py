@@ -1,29 +1,36 @@
 import logging
 import asyncio
-from fastapi import FastAPI, Depends, HTTPException
+import os
+from dataclasses import asdict
+from typing import Optional
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from agent_sdk.config.loader import load_config
 from agent_sdk.core.runtime import PlannerExecutorRuntime
 from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.plugins.loader import PluginLoader
-from agent_sdk.security import verify_api_key
+from agent_sdk.security import verify_api_key, get_api_key_manager
 from agent_sdk.validators import RunTaskRequest, TaskResponse, HealthResponse, ReadyResponse
 from agent_sdk.exceptions import ConfigError, AgentSDKException
 from agent_sdk.observability.stream_envelope import (
     StreamEnvelope,
     StreamChannel,
     RunStatus,
+    RunMetadata,
+    SessionMetadata,
     new_run_id,
     new_session_id,
 )
 from agent_sdk.server.run_store import RunEventStore
+from agent_sdk.storage.sqlite import SQLiteStorage
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(config_path: str = "config.yaml"):
+def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = None):
     """Create and configure FastAPI application
     
     Args:
@@ -38,15 +45,22 @@ def create_app(config_path: str = "config.yaml"):
         planner, executor = load_config(config_path, MockLLMClient())
         runtime = PlannerExecutorRuntime(planner, executor)
         run_store = RunEventStore()
+        db_path = storage_path or os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
+        storage = SQLiteStorage(db_path)
         logger.info("Application initialized successfully")
     except ConfigError as e:
         logger.error(f"Failed to initialize application: {e}")
+        error_message = str(e)
         # Create a minimal app that reports the error
         app = FastAPI(title="Agent SDK", version="0.1.0")
         
         @app.get("/health")
         async def health_error():
-            return {"status": "unhealthy", "error": str(e)}
+            return {"status": "unhealthy", "error": error_message}
+
+        @app.get("/ready")
+        async def readiness_error():
+            raise HTTPException(status_code=503, detail=f"Service not ready: {error_message}")
         
         return app
 
@@ -55,6 +69,15 @@ def create_app(config_path: str = "config.yaml"):
         version="0.1.0",
         description="Agent SDK - Modular Agent Framework with Planning, Execution, and Observability"
     )
+
+    ui_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ui"))
+    ui_source = os.path.join(ui_root, "index.html")
+    ui_dist = os.path.join(ui_root, "dist", "index.html")
+
+    def _resolve_ui_path() -> str:
+        if os.path.exists(ui_dist):
+            return ui_dist
+        return ui_source
 
     # Add CORS middleware
     app.add_middleware(
@@ -65,7 +88,41 @@ def create_app(config_path: str = "config.yaml"):
         allow_headers=["*"],
     )
 
+    # Basic API key auth middleware for protected routes
+    protected_prefixes = ("/run", "/sessions", "/tools")
+    public_paths = ("/health", "/ready", "/docs", "/openapi.json", "/redoc")
+
+    @app.middleware("http")
+    async def api_key_middleware(request: Request, call_next):
+        path = request.url.path
+        if path.startswith(protected_prefixes) and path not in public_paths:
+            api_key = request.headers.get("X-API-Key")
+            if not api_key:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Missing API key in X-API-Key header"},
+                )
+            manager = get_api_key_manager()
+            if not manager.verify_key(api_key):
+                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+        return await call_next(request)
+
+    @app.get("/", tags=["UI"])
+    async def dev_console_root():
+        ui_path = _resolve_ui_path()
+        if not os.path.exists(ui_path):
+            raise HTTPException(status_code=404, detail="UI not found")
+        return FileResponse(ui_path, media_type="text/html")
+
+    @app.get("/ui", tags=["UI"])
+    async def dev_console():
+        ui_path = _resolve_ui_path()
+        if not os.path.exists(ui_path):
+            raise HTTPException(status_code=404, detail="UI not found")
+        return FileResponse(ui_path, media_type="text/html")
+
     app.state.run_store = run_store
+    app.state.storage = storage
 
     # Health Check Endpoint
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -109,9 +166,32 @@ def create_app(config_path: str = "config.yaml"):
         """
         try:
             logger.info(f"Executing task: {req.task[:100]}")
-            msgs = await runtime.run_async(req.task)
+            session_id = new_session_id()
+            run_id = new_run_id()
+
+            session = SessionMetadata(session_id=session_id)
+            storage.create_session(session)
+
+            run_meta = RunMetadata(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="planner-executor",
+                status=RunStatus.RUNNING,
+            )
+            storage.create_run(run_meta)
+
+            msgs = await runtime.run_async(req.task, session_id=session_id, run_id=run_id)
+            run_meta = RunMetadata(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="planner-executor",
+                status=RunStatus.COMPLETED,
+            )
+            storage.update_run(run_meta)
             
             result_data = {
+                "run_id": run_id,
+                "session_id": session_id,
                 "messages": [
                     {
                         "id": m.id,
@@ -205,6 +285,14 @@ def create_app(config_path: str = "config.yaml"):
                     seq=seq,
                 )
                 run_store.append_event(run_id, end_event)
+                storage.update_run(
+                    RunMetadata(
+                        run_id=run_id,
+                        session_id=session_id,
+                        agent_id="planner-executor",
+                        status=RunStatus.COMPLETED,
+                    )
+                )
             except Exception as e:
                 logger.error(f"Error during streaming execution: {e}", exc_info=True)
                 run_store.append_event(
@@ -218,6 +306,14 @@ def create_app(config_path: str = "config.yaml"):
                         status=RunStatus.ERROR.value,
                         seq=seq,
                     ),
+                )
+                storage.update_run(
+                    RunMetadata(
+                        run_id=run_id,
+                        session_id=session_id,
+                        agent_id="planner-executor",
+                        status=RunStatus.ERROR,
+                    )
                 )
 
         async def event_generator(run_id: str):
@@ -237,6 +333,15 @@ def create_app(config_path: str = "config.yaml"):
 
         run_id = new_run_id()
         session_id = new_session_id()
+        storage.create_session(SessionMetadata(session_id=session_id))
+        storage.create_run(
+            RunMetadata(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="planner-executor",
+                status=RunStatus.RUNNING,
+            )
+        )
         run_store.create_run(run_id)
         asyncio.create_task(emit_run_events(run_id, session_id))
 
@@ -273,6 +378,39 @@ def create_app(config_path: str = "config.yaml"):
                 "Connection": "keep-alive",
             }
         )
+
+    @app.get(
+        "/run/{run_id}",
+        dependencies=[Depends(verify_api_key)],
+        tags=["Tasks"]
+    )
+    async def get_run(run_id: str):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        data = asdict(run)
+        data["status"] = run.status.value
+        return data
+
+    @app.get(
+        "/sessions",
+        dependencies=[Depends(verify_api_key)],
+        tags=["Tasks"]
+    )
+    async def list_sessions(limit: int = 100):
+        sessions = storage.list_sessions(limit=limit)
+        return [asdict(session) for session in sessions]
+
+    @app.get(
+        "/sessions/{session_id}",
+        dependencies=[Depends(verify_api_key)],
+        tags=["Tasks"]
+    )
+    async def get_session(session_id: str):
+        session = storage.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return asdict(session)
 
     # List Tools Endpoint
     @app.get("/tools", tags=["Tools"])

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -53,7 +53,7 @@ class ModelAdapter:
         """
         self.model_id = model_id
         self.config = config or AdapterConfig()
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self.inference_count = 0
         self.total_tokens = 0
         self.is_active = True

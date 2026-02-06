@@ -244,8 +244,10 @@ class ExecutorAgent(Agent):
         try:
             start = time.time()
             resp = await retry_with_backoff(
-                lambda: self.llm.generate_async(messages, self.context.model_config),
-                max_retries=3
+                self.llm.generate_async,
+                max_retries=3,
+                messages=messages,
+                model_config=self.context.model_config,
             )
             end = time.time()
             latency_ms = (end - start) * 1000

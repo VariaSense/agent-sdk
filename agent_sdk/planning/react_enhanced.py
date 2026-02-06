@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
+import inspect
 
 
 class ReactStep(str, Enum):
@@ -390,7 +391,7 @@ class EnhancedReactAgent:
             try:
                 if action.tool_name in self.available_tools:
                     tool = self.available_tools[action.tool_name]
-                    if asyncio.iscoroutinefunction(tool):
+                    if inspect.iscoroutinefunction(tool):
                         result = await tool(**action.parameters)
                     else:
                         result = tool(**action.parameters)

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent SDK Dev Console</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f2ec;
+        --panel: #ffffff;
+        --ink: #1b1a17;
+        --muted: #6a6a6a;
+        --accent: #2f5b4c;
+        --accent-2: #b35a3c;
+        --border: #ded7cc;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Space Grotesk", system-ui, sans-serif;
+        background: radial-gradient(circle at 20% 20%, #fef7ee, var(--bg));
+        color: var(--ink);
+      }
+      header {
+        padding: 24px 32px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(120deg, #fff3e1, #f7efe5);
+      }
+      header h1 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: 0.5px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        padding: 24px 32px 40px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.04);
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      input, textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        font-size: 14px;
+        font-family: inherit;
+        margin-bottom: 12px;
+      }
+      textarea {
+        min-height: 140px;
+        resize: vertical;
+      }
+      button {
+        background: var(--accent);
+        color: white;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 8px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .log {
+        white-space: pre-wrap;
+        font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        max-height: 520px;
+        overflow: auto;
+        border: 1px dashed var(--border);
+        padding: 12px;
+        border-radius: 10px;
+        background: #faf8f4;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Agent SDK Dev Console</h1>
+      <div class="hint">Local-first UI for streaming agent runs.</div>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="row">
+          <div>
+            <label>API Base URL</label>
+            <input id="baseUrl" value="" placeholder="http://localhost:8000" />
+          </div>
+          <div>
+            <label>API Key</label>
+            <input id="apiKey" placeholder="X-API-Key" />
+          </div>
+        </div>
+        <label>Task</label>
+        <textarea id="taskInput" placeholder="Describe what you want the agent to do..."></textarea>
+        <button id="runBtn">Run (Stream)</button>
+        <div class="hint" id="status"></div>
+      </section>
+      <section class="panel">
+        <label>Stream Output</label>
+        <div class="log" id="streamLog"></div>
+      </section>
+    </main>
+    <script>
+      const runBtn = document.getElementById("runBtn");
+      const streamLog = document.getElementById("streamLog");
+      const statusEl = document.getElementById("status");
+      const baseUrlInput = document.getElementById("baseUrl");
+      const apiKeyInput = document.getElementById("apiKey");
+
+      const defaultBase = window.location.origin;
+      if (!baseUrlInput.value) {
+        baseUrlInput.value = defaultBase;
+      }
+
+      function appendLog(line) {
+        streamLog.textContent += line + "\\n";
+        streamLog.scrollTop = streamLog.scrollHeight;
+      }
+
+      async function runStream() {
+        streamLog.textContent = "";
+        statusEl.textContent = "Starting run...";
+        runBtn.disabled = true;
+
+        const baseUrl = baseUrlInput.value.replace(/\\/$/, "");
+        const apiKey = apiKeyInput.value;
+        const task = document.getElementById("taskInput").value.trim();
+
+        if (!task) {
+          statusEl.textContent = "Task is required.";
+          runBtn.disabled = false;
+          return;
+        }
+
+        const response = await fetch(`${baseUrl}/run/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": apiKey
+          },
+          body: JSON.stringify({ task })
+        });
+
+        if (!response.ok || !response.body) {
+          statusEl.textContent = `Failed: ${response.status}`;
+          runBtn.disabled = false;
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\\n\\n");
+          buffer = parts.pop() || "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) {
+              const payload = line.replace("data: ", "");
+              appendLog(payload);
+            }
+          }
+        }
+
+        statusEl.textContent = "Stream complete.";
+        runBtn.disabled = false;
+      }
+
+      runBtn.addEventListener("click", () => {
+        runStream().catch((err) => {
+          statusEl.textContent = `Error: ${err.message}`;
+          runBtn.disabled = false;
+        });
+      });
+    </script>
+  </body>
+</html>

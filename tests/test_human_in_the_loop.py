@@ -155,9 +155,11 @@ class TestApprovalRequest:
         """Test request expiration."""
         from datetime import timedelta
         
+        from datetime import datetime, timezone
+
         request = ApprovalRequest(
             decision_id="dec-1",
-            expires_at=__import__("datetime").datetime.utcnow() - timedelta(seconds=1)
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
         )
         assert request.is_expired() is True
 

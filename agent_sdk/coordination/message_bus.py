@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -37,7 +37,7 @@ class Message:
     target_agent_id: Optional[str] = None  # None = broadcast
     payload: Any = None
     priority: MessagePriority = MessagePriority.NORMAL
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reply_to: Optional[str] = None  # For message threading
     metadata: Dict[str, Any] = field(default_factory=dict)
     

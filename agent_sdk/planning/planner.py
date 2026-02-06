@@ -150,8 +150,8 @@ class PlannerAgent(Agent):
                 self.llm.generate_async,
                 max_retries=3,
                 base_delay=1.0,
-                prompt=prompt,
-                model_config=self.context.model_config
+                messages=prompt,
+                model_config=self.context.model_config,
             )
             end = time.time()
             latency_ms = (end - start) * 1000

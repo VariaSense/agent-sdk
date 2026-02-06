@@ -84,12 +84,14 @@ class FineTuningOrchestrator:
         self,
         dataset: TrainingDataset,
         config: Optional[TrainingJobConfig] = None,
+        background: bool = False,
     ) -> TrainingJob:
         """Submit a training job.
         
         Args:
             dataset: Training dataset
             config: Training configuration
+            background: Run job asynchronously if True
             
         Returns:
             TrainingJob instance
@@ -103,8 +105,11 @@ class FineTuningOrchestrator:
         # Store job
         self.jobs[job.job_id] = job
         
-        # Submit for execution (in background)
-        asyncio.create_task(self._execute_job(job, dataset))
+        # Submit for execution
+        if background:
+            asyncio.create_task(self._execute_job(job, dataset))
+        else:
+            await self._execute_job(job, dataset)
         
         return job
     

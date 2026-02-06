@@ -48,7 +48,7 @@ def load_config(path: str, llm_client: LLMClient):
 
     # Build models
     models = {
-        name: ModelConfig(**m.dict())
+        name: ModelConfig(**m.model_dump())
         for name, m in validated_cfg.models.items()
     }
     logger.debug(f"Loaded {len(models)} models: {', '.join(models.keys())}")

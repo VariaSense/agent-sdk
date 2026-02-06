@@ -7,6 +7,7 @@ from agent_sdk.core.runtime import PlannerExecutorRuntime
 from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.core.tools import GLOBAL_TOOL_REGISTRY
 from agent_sdk.plugins.loader import PluginLoader
+from agent_sdk.presets.runtime import build_runtime_from_preset
 
 run_cmd = typer.Typer(help="Run tasks using the agent runtime")
 tools_cmd = typer.Typer(help="Inspect tools")
@@ -15,24 +16,30 @@ init_cmd = typer.Typer(help="Project scaffolding")
 serve_cmd = typer.Typer(help="Serve agents over HTTP")
 
 @run_cmd.command("task")
-def run_task(task: str, config: str = "config.yaml"):
+def run_task(task: str, config: str = "config.yaml", preset: str = ""):
     loader = PluginLoader()
     loader.load()
-    planner, executor = load_config(config, MockLLMClient())
-    runtime = PlannerExecutorRuntime(planner, executor)
+    if preset:
+        runtime = build_runtime_from_preset(preset, MockLLMClient())
+    else:
+        planner, executor = load_config(config, MockLLMClient())
+        runtime = PlannerExecutorRuntime(planner, executor)
     msgs = asyncio.run(runtime.run_async(task))
     for m in msgs:
         typer.echo(f"{m.role.upper()}: {m.content}")
 
 @run_cmd.command("file")
-def run_file(file: str, config: str = "config.yaml"):
+def run_file(file: str, config: str = "config.yaml", preset: str = ""):
     with open(file, "r") as f:
         data = yaml.safe_load(f)
     task = data["task"]
     loader = PluginLoader()
     loader.load()
-    planner, executor = load_config(config, MockLLMClient())
-    runtime = PlannerExecutorRuntime(planner, executor)
+    if preset:
+        runtime = build_runtime_from_preset(preset, MockLLMClient())
+    else:
+        planner, executor = load_config(config, MockLLMClient())
+        runtime = PlannerExecutorRuntime(planner, executor)
     msgs = asyncio.run(runtime.run_async(task))
     for m in msgs:
         typer.echo(f"{m.role.upper()}: {m.content}")

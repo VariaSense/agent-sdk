@@ -77,7 +77,9 @@ class CharacterChunker(ChunkingStrategy):
                 },
             )
             chunks.append(chunk)
-            
+            if end >= len(content):
+                break
+
             # Move to next chunk
             start = end - self.overlap
             chunk_number += 1
@@ -98,6 +100,8 @@ class TokenChunker(ChunkingStrategy):
         """
         if max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if overlap >= max_tokens:
+            raise ValueError("overlap must be less than max_tokens")
         
         self.max_tokens = max_tokens
         self.overlap = overlap
@@ -174,7 +178,9 @@ class TokenChunker(ChunkingStrategy):
                     },
                 )
                 chunks.append(chunk)
-                
+                if end_idx >= len(tokens):
+                    break
+
                 start_idx = end_idx - self.overlap
                 chunk_number += 1
             
@@ -220,7 +226,9 @@ class TokenChunker(ChunkingStrategy):
                 },
             )
             chunks.append(chunk)
-            
+            if end >= len(content):
+                break
+
             start = end - overlap_size
             chunk_number += 1
         

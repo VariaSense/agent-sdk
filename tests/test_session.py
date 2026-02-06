@@ -7,7 +7,7 @@ from agent_sdk.coordination.session import (
     AgentSession,
     SessionManager
 )
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class TestAgentSessionSnapshot:
@@ -44,7 +44,7 @@ class TestAgentSessionSnapshot:
     
     def test_to_dict_with_times(self):
         """Test serialization with times."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         snapshot = AgentSessionSnapshot(
             agent_id="a1",
             agent_name="Agent 1",

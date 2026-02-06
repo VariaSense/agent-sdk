@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
@@ -28,7 +28,7 @@ class RoutingDecision:
         self.decision_trace = decision_trace
         self.execution_strategy = execution_strategy
         self.metadata = metadata or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -107,7 +107,7 @@ class RoutingDecisionTree:
         self.nodes: List[RoutingNode] = []
         self.paths: Dict[str, RoutingPath] = {}
         self.metadata: Dict[str, Any] = {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
     
     def add_node(self, node: RoutingNode) -> None:
         """Add node to tree."""

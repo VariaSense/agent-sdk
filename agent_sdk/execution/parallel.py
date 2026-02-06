@@ -16,6 +16,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Callable, Coroutine
 import asyncio
+import inspect
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -384,14 +385,14 @@ class AsyncTaskScheduler:
                 tool_func = tool_registry[task.tool_name]
                 start_time = datetime.now()
                 try:
-                    if asyncio.iscoroutinefunction(tool_func):
+                    if inspect.iscoroutinefunction(tool_func):
                         result_value = await tool_func(**task.params)
                     else:
                         result_value = tool_func(**task.params)
 
                     end_time = datetime.now()
                     duration = (end_time - start_time).total_seconds() * 1000
-                    return TaskResult(
+                    result = TaskResult(
                         task_id=task.task_id,
                         status=TaskStatus.COMPLETED,
                         result=result_value,
@@ -402,7 +403,7 @@ class AsyncTaskScheduler:
                 except Exception as e:
                     end_time = datetime.now()
                     duration = (end_time - start_time).total_seconds() * 1000
-                    return TaskResult(
+                    result = TaskResult(
                         task_id=task.task_id,
                         status=TaskStatus.FAILED,
                         error=str(e),
@@ -410,6 +411,11 @@ class AsyncTaskScheduler:
                         end_time=end_time,
                         duration_ms=duration,
                     )
+
+                # Mark completion immediately so dependent tasks can proceed.
+                self.completed_tasks[result.task_id] = result
+                task.result = result
+                return result
 
         # Execute all tasks concurrently
         coros = [execute_with_deps(task) for task in self.tasks.values()]

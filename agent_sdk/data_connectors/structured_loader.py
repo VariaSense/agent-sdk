@@ -111,12 +111,16 @@ class CSVLoader:
         
         lines = content.split('\n')
         headers = lines[0].split(self.delimiter) if lines else []
+        data_lines = [line for line in lines[1:] if line.strip()] if len(lines) > 1 else []
+        total_rows = len(data_lines)
         
         document = Document(
             content=content,
             metadata={
                 "file_name": os.path.basename(file_path),
                 "note": "pandas not installed - basic parsing only",
+                "total_rows": total_rows,
+                "total_columns": len(headers),
                 "columns": headers,
             },
             source=file_path,

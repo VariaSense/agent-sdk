@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class StreamEventType(str, Enum):
@@ -35,7 +35,7 @@ class StreamingMessage:
     agent_id: Optional[str] = None
     tool_name: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_sse_format(self) -> str:
         """Convert message to SSE format."""

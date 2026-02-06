@@ -501,6 +501,16 @@ class ObservabilityManager:
         self.metrics.record_latency(f"model_{provider}", latency_ms)
         self.metrics.record_cost(model_name, provider, input_tokens, output_tokens, cost_usd)
 
+    def record_metric(
+        self,
+        name: str,
+        value: float,
+        unit: str = "",
+        attributes: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a custom metric."""
+        self.metrics.record_metric(name, value, unit=unit, attributes=attributes)
+
     def get_summary(self) -> Dict[str, Any]:
         """Get complete observability summary."""
         return {

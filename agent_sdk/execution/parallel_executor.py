@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Callable, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
+import inspect
 import uuid
 
 
@@ -259,7 +260,7 @@ class ParallelToolExecutor:
             tool = self.available_tools[execution.tool_name]
 
             # Call tool (async or sync)
-            if asyncio.iscoroutinefunction(tool):
+            if inspect.iscoroutinefunction(tool):
                 result = await tool(**execution.parameters)
             else:
                 result = tool(**execution.parameters)

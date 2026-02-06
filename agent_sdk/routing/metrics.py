@@ -1,7 +1,7 @@
 """Metrics and analytics for routing decisions."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
@@ -18,7 +18,7 @@ class RoutingMetrics:
     estimated_cost: float
     success: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

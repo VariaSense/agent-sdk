@@ -1,16 +1,44 @@
 """Tests for API endpoints"""
 
+import os
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
 from agent_sdk.server.app import create_app
 from agent_sdk.validators import RunTaskRequest, TaskResponse
+import agent_sdk.security as security
+
+
+def _write_config(tmpdir: str) -> str:
+    config_path = os.path.join(tmpdir, "config.yaml")
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(
+            """
+models:
+  mock:
+    name: mock
+    provider: mock
+    model_id: mock
+agents:
+  planner:
+    model: mock
+  executor:
+    model: mock
+rate_limits: []
+"""
+        )
+    return config_path
 
 
 @pytest.fixture
 def client(mock_llm, model_config):
     """Create test client"""
-    app = create_app()
-    return TestClient(app)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["API_KEY"] = "test-key"
+        security._api_key_manager = None
+        app = create_app(config_path=_write_config(tmpdir))
+        yield TestClient(app)
 
 
 def test_health_endpoint(client):
@@ -36,7 +64,7 @@ def test_run_endpoint_missing_api_key(client):
     response = client.post("/run", json=payload)
     assert response.status_code == 401
     data = response.json()
-    assert "authentication" in data.get("detail", "").lower()
+    assert "api key" in data.get("detail", "").lower()
 
 
 def test_run_endpoint_invalid_api_key(client, monkeypatch):
@@ -83,17 +111,18 @@ def test_run_endpoint_invalid_timeout(client, monkeypatch):
 
 def test_tools_endpoint(client):
     """Test /tools endpoint lists available tools"""
-    response = client.get("/tools")
+    response = client.get("/tools", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
+    assert "tools" in data
+    assert "count" in data
 
 
 def test_tools_endpoint_tool_schema(client):
     """Test /tools endpoint returns valid tool schema"""
-    response = client.get("/tools")
+    response = client.get("/tools", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
-    tools = response.json()
+    tools = response.json().get("tools", [])
     
     if tools:
         tool = tools[0]
@@ -111,7 +140,8 @@ def test_run_endpoint_success_response_structure(client, monkeypatch):
     
     if response.status_code == 200:
         data = response.json()
-        assert "task_id" in data
+        assert "run_id" in data["result"]
+        assert "session_id" in data["result"]
         assert "status" in data
         assert "result" in data
 

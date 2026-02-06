@@ -60,8 +60,19 @@ class RunEventStore:
         if run_id not in self._runs:
             return
         buffer = self._runs[run_id]
-        for event in list(buffer.history):
+        history = list(buffer.history)
+        for event in history:
             yield event
+        if history:
+            last = history[-1]
+            if last.stream == StreamChannel.LIFECYCLE and last.event in {"end", "error", "timeout", "canceled"}:
+                return
+        # Drain any existing queued events to avoid duplicates of history.
+        while not buffer.queue.empty():
+            try:
+                buffer.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         while True:
             event = await buffer.queue.get()
             yield event

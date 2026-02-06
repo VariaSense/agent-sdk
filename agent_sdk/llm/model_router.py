@@ -213,6 +213,7 @@ class QualityOptimizedStrategy(ModelSelectionStrategy):
             "generation": ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"],
             "fast": ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4"],
             "cost": ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4"],
+            "general": ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"],
         }
         
         preferred_order = quality_order.get(task_type, quality_order["general"])

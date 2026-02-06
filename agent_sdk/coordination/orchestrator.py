@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -59,7 +59,7 @@ class AgentExecutionResult:
     tokens_used: int = 0
     cost_incurred: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

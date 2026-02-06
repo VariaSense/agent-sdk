@@ -8,6 +8,7 @@ app.add_typer(tools_cmd, name="tools")
 app.add_typer(agents_cmd, name="agents")
 app.add_typer(init_cmd, name="init")
 app.add_typer(serve_cmd, name="serve")
+app.add_typer(serve_cmd, name="server")
 
 
 @app.command()

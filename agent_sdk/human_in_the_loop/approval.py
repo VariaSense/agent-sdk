@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Callable, List
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import uuid
 import asyncio
@@ -38,7 +38,7 @@ class ApprovalRequest:
     required_approvers: int = 1
     current_approvals: int = 0
     status: ApprovalStatus = ApprovalStatus.PENDING
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None
     decision_data: Dict[str, Any] = field(default_factory=dict)
     approvers: List[str] = field(default_factory=list)
@@ -47,7 +47,7 @@ class ApprovalRequest:
         """Check if request is expired."""
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
     
     def is_approved(self) -> bool:
         """Check if approved."""
@@ -138,7 +138,8 @@ class ApprovalWorkflow:
             description=description,
             required_approvers=required_approvers,
             decision_data=decision_data or {},
-            expires_at=datetime.utcnow() + timedelta(seconds=self.default_timeout),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=self.default_timeout),
         )
         
         self.requests[request.request_id] = request

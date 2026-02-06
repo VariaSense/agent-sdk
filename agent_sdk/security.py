@@ -13,12 +13,14 @@ class APIKeyManager:
 
     def __init__(self):
         self.valid_keys = set()
+        self.api_key: Optional[str] = None
         self._load_keys()
 
     def _load_keys(self):
         """Load API keys from environment"""
         api_key = os.getenv("API_KEY")
         if api_key:
+            self.api_key = api_key
             self.valid_keys.add(api_key)
             logger.debug("API keys loaded from environment")
 
@@ -34,6 +36,10 @@ class APIKeyManager:
         if not key:
             return False
         return key in self.valid_keys
+
+    def verify(self, key: str) -> bool:
+        """Compatibility alias for verify_key."""
+        return self.verify_key(key)
 
 
 _api_key_manager = None
@@ -74,6 +80,21 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)) -> str:
 class InputSanitizer:
     """Sanitize inputs to prevent injection"""
 
+    def __init__(self, max_string_length: int = 10000, max_dict_size: int = 100000):
+        self.max_string_length = max_string_length
+        self.max_dict_size = max_dict_size
+
+    def sanitize(self, value: Any) -> Any:
+        """Sanitize input value based on type."""
+        from agent_sdk.exceptions import ValidationError
+
+        if isinstance(value, str):
+            return self.sanitize_string(value, max_length=self.max_string_length)
+        if isinstance(value, dict):
+            return self.sanitize_dict(value, max_size=self.max_dict_size)
+
+        raise ValidationError("Unsupported input type", code="VALIDATION_ERROR")
+
     @staticmethod
     def sanitize_string(value: str, max_length: int = 10000) -> str:
         """Sanitize string input
@@ -88,11 +109,16 @@ class InputSanitizer:
         Raises:
             ValueError: If value is invalid
         """
+        from agent_sdk.exceptions import ValidationError
+
         if not isinstance(value, str):
-            raise ValueError("Expected string")
+            raise ValidationError("Expected string", code="VALIDATION_ERROR")
 
         if len(value) > max_length:
-            raise ValueError(f"String exceeds max length of {max_length}")
+            raise ValidationError(
+                f"String exceeds max length of {max_length}",
+                code="VALIDATION_ERROR",
+            )
 
         # Remove null bytes
         value = value.replace("\x00", "")
@@ -110,8 +136,13 @@ class InputSanitizer:
         Returns:
             Sanitized dictionary
         """
-        if len(str(data)) > max_size:
-            raise ValueError(f"Dictionary exceeds max size of {max_size} bytes")
+        from agent_sdk.exceptions import ValidationError
+
+        if len(data) > max_size:
+            raise ValidationError(
+                f"Dictionary exceeds max size of {max_size} entries",
+                code="VALIDATION_ERROR",
+            )
 
         return data
 
@@ -165,12 +196,37 @@ class PIIFilter:
         import re
 
         # Redact API keys
-        value = re.sub(r"sk-[a-zA-Z0-9]+", "[API_KEY]", value)
+        value = re.sub(r"\bsk[-_][a-zA-Z0-9_]+\b", "[API_KEY_REDACTED]", value)
         # Redact email addresses
         value = re.sub(
-            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", value
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+            "[EMAIL_REDACTED]",
+            value,
         )
         # Redact phone numbers
-        value = re.sub(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", "[PHONE]", value)
+        value = re.sub(
+            r"\b\+?\d{1,3}[-.\s]?\d{3}[-.\s]?\d{4}\b",
+            "[PHONE_REDACTED]",
+            value,
+        )
 
+        return value
+
+    def filter_pii(self, value: Any) -> Any:
+        """Filter PII in strings and dicts."""
+        if isinstance(value, str):
+            return self.filter_string(value)
+        if isinstance(value, dict):
+            filtered = self.filter_dict(value)
+            for key, val in list(filtered.items()):
+                if isinstance(val, str):
+                    filtered[key] = self.filter_string(val)
+                elif isinstance(val, dict):
+                    filtered[key] = self.filter_pii(val)
+                elif isinstance(val, list):
+                    filtered[key] = [
+                        self.filter_pii(item) if isinstance(item, (dict, str)) else item
+                        for item in val
+                    ]
+            return filtered
         return value

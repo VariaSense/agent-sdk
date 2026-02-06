@@ -13,7 +13,7 @@ import asyncio
 import json
 from typing import AsyncGenerator, Any, Dict, Iterator, Optional, List, Union
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -76,7 +76,7 @@ class StreamEventCollector:
         """Add an event to the collector."""
         event = StreamEvent(
             type=event_type,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             data=data,
             step_id=step_id,
         )
@@ -395,7 +395,7 @@ class StreamChunk:
     
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -433,11 +433,11 @@ class StreamSession:
     
     def __post_init__(self):
         if self.start_time is None:
-            self.start_time = datetime.utcnow()
+            self.start_time = datetime.now(timezone.utc)
     
     def mark_complete(self):
         """Mark session as complete."""
-        self.end_time = datetime.utcnow()
+        self.end_time = datetime.now(timezone.utc)
     
     def mark_error(self, error: str):
         """Mark session with error."""

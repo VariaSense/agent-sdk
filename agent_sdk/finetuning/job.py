@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import uuid
 
@@ -79,7 +79,7 @@ class TrainingJob:
     job_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     config: TrainingJobConfig = field(default_factory=TrainingJobConfig)
     status: TrainingJobStatus = TrainingJobStatus.CREATED
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     training_examples: int = 0
@@ -90,7 +90,7 @@ class TrainingJob:
     def start(self) -> None:
         """Mark job as started."""
         self.status = TrainingJobStatus.RUNNING
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(timezone.utc)
     
     def complete(self, model_id: str, metrics: Dict[str, float]) -> None:
         """Mark job as completed.
@@ -100,7 +100,7 @@ class TrainingJob:
             metrics: Training metrics
         """
         self.status = TrainingJobStatus.COMPLETED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self.model_id = model_id
         self.metrics = metrics
     
@@ -111,13 +111,13 @@ class TrainingJob:
             error: Error message
         """
         self.status = TrainingJobStatus.FAILED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self.error_message = error
     
     def cancel(self) -> None:
         """Cancel the job."""
         self.status = TrainingJobStatus.CANCELLED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
     
     def get_duration(self) -> Optional[float]:
         """Get job duration in seconds.
@@ -126,7 +126,7 @@ class TrainingJob:
             Duration in seconds, or None if not completed
         """
         start = self.started_at or self.created_at
-        end = self.completed_at or datetime.utcnow()
+        end = self.completed_at or datetime.now(timezone.utc)
         delta = end - start
         return delta.total_seconds()
     
@@ -139,7 +139,7 @@ class TrainingJob:
         elif self.status == TrainingJobStatus.RUNNING:
             # Simulate progress based on time elapsed
             if self.started_at:
-                elapsed = (datetime.utcnow() - self.started_at).total_seconds()
+                elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()
                 # Assume 5 minute training window for progress calculation
                 progress = min(0.9, elapsed / 300.0)
                 return progress

@@ -1,6 +1,7 @@
 """Retry logic with exponential backoff for resilience"""
 
 import asyncio
+import inspect
 import logging
 from typing import Callable, Any, TypeVar, Optional
 import time
@@ -40,7 +41,7 @@ async def retry_with_backoff(
 
     for attempt in range(max_retries):
         try:
-            if asyncio.iscoroutinefunction(func):
+            if inspect.iscoroutinefunction(func):
                 return await func(*args, **kwargs)
             return func(*args, **kwargs)
         except Exception as e:

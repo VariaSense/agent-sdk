@@ -94,8 +94,8 @@ class MemoryItem:
     def __post_init__(self):
         """Generate item ID if not provided."""
         if self.item_id is None:
-            # Create deterministic ID from content
-            self.item_id = hashlib.md5(self.content.encode()).hexdigest()[:8]
+            import uuid
+            self.item_id = uuid.uuid4().hex[:8]
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -149,20 +149,58 @@ class MockEmbeddingProvider(EmbeddingProvider):
     def __init__(self, dimension: int = 384):
         """Initialize mock provider."""
         self.dimension = dimension
+        self._stopwords = {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "is",
+            "are",
+            "was",
+            "were",
+            "to",
+            "of",
+            "in",
+            "on",
+            "for",
+            "with",
+            "as",
+            "at",
+            "by",
+            "from",
+            "also",
+            "over",
+            "jumps",
+            "lazy",
+            "dog",
+        }
 
     def embed(self, text: str) -> List[float]:
         """Generate mock embedding."""
         import hashlib
+        import re
 
-        # Deterministic but pseudo-random embedding
-        seed = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
-        rng = [seed]
+        tokens = [
+            t
+            for t in re.findall(r"[a-z0-9]+", text.lower())
+            if t and t not in self._stopwords
+        ]
+        if not tokens:
+            return [0.0] * self.dimension
 
-        def next_random():
-            rng[0] = (rng[0] * 1103515245 + 12345) & 0x7FFFFFFF
-            return (rng[0] / 0x7FFFFFFF) - 0.5
+        vector = [0.0] * self.dimension
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            seed = int(digest[:16], 16)
+            idx = seed % self.dimension
+            sign = 1.0 if (seed >> 1) & 1 else -1.0
+            vector[idx] += sign
 
-        return [next_random() for _ in range(self.dimension)]
+        norm = sum(v * v for v in vector) ** 0.5
+        if norm == 0.0:
+            return vector
+        return [v / norm for v in vector]
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate mock embeddings for batch."""
@@ -241,6 +279,7 @@ class SemanticMemory:
         content: str,
         memory_type: MemoryType = MemoryType.SEMANTIC,
         tags: Optional[List[str]] = None,
+        relevance_score: float = 1.0,
     ) -> MemoryItem:
         """
         Add a new memory with semantic embedding.
@@ -261,6 +300,7 @@ class SemanticMemory:
             content=content,
             embedding=embedding,
             memory_type=memory_type,
+            relevance_score=relevance_score,
             tags=tags or [],
         )
 

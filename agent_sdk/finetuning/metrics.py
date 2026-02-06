@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -23,7 +23,7 @@ class TrainingMetrics:
     learning_rate: float = 0.0001
     tokens_processed: int = 0
     examples_processed: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -62,7 +62,7 @@ class EvaluationMetrics:
     latency_ms: Optional[float] = None
     throughput: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

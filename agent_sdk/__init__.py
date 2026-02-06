@@ -18,6 +18,8 @@ from .observability.bus import EventBus
 from .observability.sinks import ConsoleSink, JSONLSink
 from .observability.events import ObsEvent
 from .storage import StorageBackend, SQLiteStorage
+from .presets import PresetDefinition, list_presets, get_preset, get_preset_config
+from .tool_packs import TOOL_PACKS, GLOBAL_TOOL_METADATA, load_builtin_tool_packs
 
 from .plugins.loader import PluginLoader
 # Documentation access
@@ -48,6 +50,16 @@ __all__ = [
     "ObsEvent",
     "StorageBackend",
     "SQLiteStorage",
+    "PresetDefinition",
+    "list_presets",
+    "get_preset",
+    "get_preset_config",
+    "TOOL_PACKS",
+    "GLOBAL_TOOL_METADATA",
+    "load_builtin_tool_packs",
     "PluginLoader",
     "docs",
 ]
+
+# Auto-load built-in tools/metadata on import.
+load_builtin_tool_packs()

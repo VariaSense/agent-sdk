@@ -237,28 +237,28 @@ Estimate: 3-5 days.
 4. Implement SSE streaming in FastAPI (`/run/{id}/events`) with backpressure safeguards. **(Completed)**  
 Estimate: 3-4 days.
 
-5. Add `POST /run`, `GET /run/{id}`, `GET /sessions`, `GET /sessions/{id}` endpoints.  
+5. Add `POST /run`, `GET /run/{id}`, `GET /sessions`, `GET /sessions/{id}` endpoints. **(Completed)**  
 Estimate: 3-4 days.
 
-6. Basic API key auth middleware + config validation at server startup.  
+6. Basic API key auth middleware + config validation at server startup. **(Completed)**  
 Estimate: 1-2 days.
 
-7. Build minimal dev console UI (submit prompt, stream output, show tool calls).  
+7. Build minimal dev console UI (submit prompt, stream output, show tool calls). **(Completed)**  
 Estimate: 4-6 days.
 
-8. Serve UI from server root (`/`) and add static build step.  
+8. Serve UI from server root (`/`) and add static build step. **(Completed)**  
 Estimate: 1-2 days.
 
-9. Implement presets (`assistant_basic`, `assistant_tools`, `assistant_rag`, `assistant_multiagent`).  
+9. Implement presets (`assistant_basic`, `assistant_tools`, `assistant_rag`, `assistant_multiagent`). **(Completed)**  
 Estimate: 2-3 days.
 
-10. Build tool packs with schema + metadata, auto-load builtin tools.  
+10. Build tool packs with schema + metadata, auto-load builtin tools. **(Completed)**  
 Estimate: 4-6 days.
 
-11. CLI wiring for presets and local server launch (`agent-sdk run --preset ...`, `agent-sdk server`).  
+11. CLI wiring for presets and local server launch (`agent-sdk run --preset ...`, `agent-sdk server`). **(Completed)**  
 Estimate: 2-3 days.
 
-12. Regression tests: event ordering, SSE stream, tool schema validation.  
+12. Regression tests: event ordering, SSE stream, tool schema validation. **(Completed)**  
 Estimate: 3-5 days.
 
 ---
