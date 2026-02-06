@@ -299,7 +299,7 @@ Estimate: 2-3 days.
 
 ## Phase 3 Backlog (Prioritized, Rough Estimates)
 
-1. Gateway mode design + protocol spec (WebSocket event envelopes, auth, reconnect).  
+1. Gateway mode design + protocol spec (WebSocket event envelopes, auth, reconnect). **(Completed)**  
 Estimate: 4-6 days.
 
 2. Gateway server skeleton: WS server with connect/auth, run stream proxying.  
