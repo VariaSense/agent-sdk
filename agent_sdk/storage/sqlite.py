@@ -29,6 +29,7 @@ class SQLiteStorage(StorageBackend):
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
+                    org_id TEXT,
                     user_id TEXT,
                     created_at TEXT,
                     updated_at TEXT,
@@ -43,6 +44,7 @@ class SQLiteStorage(StorageBackend):
                     run_id TEXT PRIMARY KEY,
                     session_id TEXT,
                     agent_id TEXT,
+                    org_id TEXT,
                     status TEXT,
                     model TEXT,
                     created_at TEXT,
@@ -59,6 +61,7 @@ class SQLiteStorage(StorageBackend):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT,
                     session_id TEXT,
+                    org_id TEXT,
                     stream TEXT,
                     event TEXT,
                     payload_json TEXT,
@@ -69,17 +72,29 @@ class SQLiteStorage(StorageBackend):
                 )
                 """
             )
+            self._ensure_column(conn, "sessions", "org_id", "TEXT")
+            self._ensure_column(conn, "runs", "org_id", "TEXT")
+            self._ensure_column(conn, "events", "org_id", "TEXT")
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column in existing:
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
     def create_session(self, session: SessionMetadata) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO sessions (
-                    session_id, user_id, created_at, updated_at, tags_json, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    session_id, org_id, user_id, created_at, updated_at, tags_json, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.session_id,
+                    session.org_id,
                     session.user_id,
                     session.created_at,
                     session.updated_at,
@@ -93,6 +108,7 @@ class SQLiteStorage(StorageBackend):
             conn.execute(
                 """
                 UPDATE sessions SET
+                    org_id = ?,
                     user_id = ?,
                     created_at = ?,
                     updated_at = ?,
@@ -101,6 +117,7 @@ class SQLiteStorage(StorageBackend):
                 WHERE session_id = ?
                 """,
                 (
+                    session.org_id,
                     session.user_id,
                     session.created_at,
                     session.updated_at,
@@ -120,6 +137,7 @@ class SQLiteStorage(StorageBackend):
                 return None
             return SessionMetadata(
                 session_id=row["session_id"],
+                org_id=row["org_id"] or "default",
                 user_id=row["user_id"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
@@ -138,6 +156,7 @@ class SQLiteStorage(StorageBackend):
                 sessions.append(
                     SessionMetadata(
                         session_id=row["session_id"],
+                        org_id=row["org_id"] or "default",
                         user_id=row["user_id"],
                         created_at=row["created_at"],
                         updated_at=row["updated_at"],
@@ -152,14 +171,15 @@ class SQLiteStorage(StorageBackend):
             conn.execute(
                 """
                 INSERT INTO runs (
-                    run_id, session_id, agent_id, status, model, created_at,
+                    run_id, session_id, agent_id, org_id, status, model, created_at,
                     started_at, ended_at, tags_json, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
                     run.session_id,
                     run.agent_id,
+                    run.org_id,
                     run.status.value,
                     run.model,
                     run.created_at,
@@ -177,6 +197,7 @@ class SQLiteStorage(StorageBackend):
                 UPDATE runs SET
                     session_id = ?,
                     agent_id = ?,
+                    org_id = ?,
                     status = ?,
                     model = ?,
                     created_at = ?,
@@ -189,6 +210,7 @@ class SQLiteStorage(StorageBackend):
                 (
                     run.session_id,
                     run.agent_id,
+                    run.org_id,
                     run.status.value,
                     run.model,
                     run.created_at,
@@ -212,6 +234,7 @@ class SQLiteStorage(StorageBackend):
                 run_id=row["run_id"],
                 session_id=row["session_id"],
                 agent_id=row["agent_id"],
+                org_id=row["org_id"] or "default",
                 status=RunStatus(row["status"]),
                 model=row["model"],
                 created_at=row["created_at"],
@@ -226,13 +249,14 @@ class SQLiteStorage(StorageBackend):
             conn.execute(
                 """
                 INSERT INTO events (
-                    run_id, session_id, stream, event, payload_json,
+                    run_id, session_id, org_id, stream, event, payload_json,
                     timestamp, seq, status, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.run_id,
                     event.session_id,
+                    event.metadata.get("org_id", "default"),
                     event.stream.value,
                     event.event,
                     json.dumps(event.payload),

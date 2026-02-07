@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from agent_sdk.server.app import create_app
 import agent_sdk.security as security
-from agent_sdk.observability.stream_envelope import StreamEnvelope, StreamChannel
+from agent_sdk.observability.stream_envelope import (
+    StreamEnvelope,
+    StreamChannel,
+    SessionMetadata,
+    RunMetadata,
+    RunStatus,
+)
 
 
 def _write_config(tmpdir: str) -> str:
@@ -40,6 +46,7 @@ def client(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
     security._api_key_manager = None
     with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setenv("AGENT_SDK_DB_PATH", os.path.join(tmpdir, "agent_sdk.db"))
         app = create_app(config_path=_write_config(tmpdir))
         yield TestClient(app)
 
@@ -58,6 +65,17 @@ def test_run_events_stream_returns_events(client):
     run_id = "run_test"
     store = client.app.state.run_store
     store.create_run(run_id)
+    storage = client.app.state.storage
+    storage.create_session(SessionMetadata(session_id="sess_1", org_id="default"))
+    storage.create_run(
+        RunMetadata(
+            run_id=run_id,
+            session_id="sess_1",
+            agent_id="planner-executor",
+            org_id="default",
+            status=RunStatus.RUNNING,
+        )
+    )
 
     store.append_event(
         run_id,

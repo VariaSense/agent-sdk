@@ -41,6 +41,11 @@ class APIKeyManager:
         """Compatibility alias for verify_key."""
         return self.verify_key(key)
 
+    def add_key(self, key: str) -> None:
+        """Add a new API key to the valid set."""
+        if key:
+            self.valid_keys.add(key)
+
 
 _api_key_manager = None
 

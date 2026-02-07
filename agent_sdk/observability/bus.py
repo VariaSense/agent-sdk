@@ -1,9 +1,9 @@
-from typing import List
+from typing import List, Optional
 from .events import ObsEvent
 from .sinks import EventSink
 
 class EventBus:
-    def __init__(self, sinks: List[EventSink] | None = None):
+    def __init__(self, sinks: Optional[List[EventSink]] = None):
         self.sinks = sinks or []
 
     def add_sink(self, sink: EventSink):

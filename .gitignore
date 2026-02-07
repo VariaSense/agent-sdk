@@ -4,3 +4,6 @@ build/
 *__pycache__/
 venv/
 .venv/
+.coverage
+htmlcov/
+agent_sdk.db

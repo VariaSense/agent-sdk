@@ -5,7 +5,7 @@ Implements message summarization and compression strategies to keep conversation
 context manageable while preserving important information.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -82,7 +82,7 @@ class CompressionEngine(ABC):
     async def compress(
         self,
         messages: List[Message],
-    ) -> List[Message | SummarizedMessage]:
+    ) -> List[Union[Message, SummarizedMessage]]:
         """Compress messages."""
         pass
 
@@ -102,7 +102,7 @@ class SummarizationEngine(CompressionEngine):
     async def compress(
         self,
         messages: List[Message],
-    ) -> List[Message | SummarizedMessage]:
+    ) -> List[Union[Message, SummarizedMessage]]:
         """Compress messages using summarization."""
         if len(messages) <= self.window_size:
             return messages
@@ -216,7 +216,7 @@ class TokenBudgetEngine(CompressionEngine):
     async def compress(
         self,
         messages: List[Message],
-    ) -> List[Message | SummarizedMessage]:
+    ) -> List[Union[Message, SummarizedMessage]]:
         """Compress to stay within token budget."""
         # Estimate total tokens
         total_tokens = sum(m.estimate_tokens() for m in messages)
@@ -283,7 +283,7 @@ class ClusteringEngine(CompressionEngine):
     async def compress(
         self,
         messages: List[Message],
-    ) -> List[Message | SummarizedMessage]:
+    ) -> List[Union[Message, SummarizedMessage]]:
         """Compress by clustering similar messages."""
         if len(messages) <= self.cluster_size * 2:
             return messages
@@ -364,7 +364,7 @@ class MemoryCompressionManager:
         """Check if compaction thresholds are exceeded."""
         return self.policy.should_compact(self.messages)
 
-    async def compress_memory(self) -> List[Message | SummarizedMessage]:
+    async def compress_memory(self) -> List[Union[Message, SummarizedMessage]]:
         """Compress current memory."""
         if not self.messages:
             return []
@@ -380,7 +380,7 @@ class MemoryCompressionManager:
 
         return compressed
 
-    async def compact_if_needed(self) -> List[Message | SummarizedMessage]:
+    async def compact_if_needed(self) -> List[Union[Message, SummarizedMessage]]:
         """Compact memory if thresholds are exceeded."""
         if self.should_compact():
             return await self.compress_memory()

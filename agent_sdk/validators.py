@@ -157,3 +157,33 @@ class ReadyResponse(BaseModel):
 
     ready: bool
     error: Optional[str] = None
+
+
+class ChannelMessageRequest(BaseModel):
+    """Inbound channel message payload."""
+
+    message: str = Field(..., min_length=1, max_length=10000)
+    session_id: Optional[str] = None
+    channel: str = Field(default="web", min_length=1, max_length=50)
+    user_id: Optional[str] = None
+
+
+class APIKeyCreateRequest(BaseModel):
+    """Create a new API key for an org."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    label: str = Field(..., min_length=1, max_length=100)
+
+
+class DeviceRegisterRequest(BaseModel):
+    """Register a device for pairing."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class DevicePairRequest(BaseModel):
+    """Pair a device with an agent."""
+
+    device_id: str = Field(..., min_length=1, max_length=200)
+    pairing_code: str = Field(..., min_length=1, max_length=50)
+    agent_id: str = Field(..., min_length=1, max_length=200)

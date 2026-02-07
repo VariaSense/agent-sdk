@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from urllib.request import Request, urlopen
 
 from agent_sdk.core.tools import Tool, ToolRegistry, GLOBAL_TOOL_REGISTRY
@@ -251,7 +251,7 @@ TOOL_PACKS: Dict[str, List[str]] = {
 
 def register_builtin_tool_packs(
     registry: ToolRegistry = GLOBAL_TOOL_REGISTRY,
-    metadata_registry: Dict[str, Dict[str, Any]] | None = None,
+    metadata_registry: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
     if metadata_registry is None:
         metadata_registry = {}

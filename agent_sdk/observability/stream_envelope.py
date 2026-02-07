@@ -50,6 +50,7 @@ class SessionMetadata:
     """Metadata for a session."""
 
     session_id: str
+    org_id: str = "default"
     user_id: Optional[str] = None
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
@@ -64,6 +65,7 @@ class RunMetadata:
     run_id: str
     session_id: str
     agent_id: str
+    org_id: str = "default"
     status: RunStatus = RunStatus.ACCEPTED
     model: Optional[str] = None
     created_at: str = field(default_factory=_now_iso)

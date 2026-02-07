@@ -3,6 +3,12 @@
 ## Purpose
 Deliver a "battery-included" experience on top of agent-sdk while keeping the SDK as the stable agent runtime. This plan defines what to build, in what order, and the concrete deliverables to track implementation.
 
+## Current Status (as of 2026-02-07)
+- Phase 1: Local-first MVP complete.
+- Phase 2: Developer experience + reliability complete.
+- Phase 3: Platform extensions complete.
+- Phase 4: Production hardening added, not started.
+
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
 - Build a minimal, local-first platform experience that can later scale to multi-tenant SaaS.
@@ -217,9 +223,9 @@ agent-sdk/
 ---
 
 ## Next Steps (actionable)
-- Confirm Phase 1 scope and deliverables.
-- Create a backlog of issues per Phase 1 item.
-- Start with event schema + run metadata (unblocks UI + SSE).
+- Kick off Phase 4 with org scoping + RBAC enforcement.
+- Implement Postgres event persistence + replay endpoints.
+- Add retention policies + audit logs + quota enforcement.
 
 ---
 
@@ -302,26 +308,169 @@ Estimate: 2-3 days.
 1. Gateway mode design + protocol spec (WebSocket event envelopes, auth, reconnect). **(Completed)**  
 Estimate: 4-6 days.
 
-2. Gateway server skeleton: WS server with connect/auth, run stream proxying.  
+2. Gateway server skeleton: WS server with connect/auth, run stream proxying. **(Completed)**  
 Estimate: 6-10 days.
 
-3. Multi-client support: subscriptions + backpressure control.  
+3. Multi-client support: subscriptions + backpressure control. **(Completed)**  
 Estimate: 4-6 days.
 
-4. Device/agent registration model (identity + pairing flow).  
+4. Device/agent registration model (identity + pairing flow). **(Completed)**  
 Estimate: 5-8 days.
 
-5. First channel integration (pick one: Slack/Discord/Web) with end-to-end flow.  
+5. First channel integration (pick one: Slack/Discord/Web) with end-to-end flow. **(Completed)**  
 Estimate: 2-3 weeks.
 
-6. Multi-tenant data model (org/user scoping + quotas) and storage upgrade plan.  
+6. Multi-tenant data model (org/user scoping + quotas) and storage upgrade plan. **(Completed)**  
 Estimate: 2-3 weeks.
 
-7. Postgres storage adapter (runs/sessions/events).  
+7. Postgres storage adapter (runs/sessions/events). **(Completed)**  
 Estimate: 1-2 weeks.
 
-8. Admin UI basics (orgs, API keys, usage overview).  
+8. Admin UI basics (orgs, API keys, usage overview). **(Completed)**  
 Estimate: 2-3 weeks.
 
-9. Deployment blueprint: Docker Compose + minimal production guide.  
+9. Deployment blueprint: Docker Compose + minimal production guide. **(Completed)**  
 Estimate: 3-5 days.
+
+---
+
+## Phase 4: Production Hardening (optional, 8-14 weeks)
+
+### Objective
+Make the SDK safe, scalable, and governable for customers building platforms on top of agent-sdk.
+
+### 4.1 Security and Access Control
+- Enforce org scoping on all run/session/event access paths.
+- Add RBAC + token scopes (admin/developer/viewer).
+- Tool sandboxing and allowlist enforcement for filesystem/http tools.
+- Secrets management integration (env + file + vault-ready interface).
+
+Deliverables:
+- `agent_sdk/security` RBAC + scope middleware.
+- `agent_sdk/tools` sandbox policy and allowlist config.
+- Docs: Security model + least-privilege guidance.
+
+### 4.2 Durability and Replay
+- Persist run events to Postgres and support replay from storage.
+- Retention policies and archiving.
+- Run state recovery for in-flight runs after restart.
+
+Deliverables:
+- `agent_sdk/storage/postgres` events persistence with replay.
+- Run event retention policy config.
+- Replay endpoints for SSE/WS.
+
+### 4.3 Governance and Compliance
+- Data retention + deletion APIs.
+- Audit logs for admin actions and API key changes.
+- PII redaction pipeline for logs/events.
+
+Deliverables:
+- `agent_sdk/observability/audit_logs`.
+- Admin APIs for retention and deletion.
+- PII redaction configuration and tests.
+
+### 4.4 Model Management and Policy
+- Per-tenant model registry and fallback routing policies.
+- Cost and token caps per org/user.
+- Prompt/policy versioning for safety controls.
+
+Deliverables:
+- `agent_sdk/llm` tenant registry + policy router.
+- Quota enforcement on run start and tool usage.
+- Prompt policy registry + versioning docs.
+
+### 4.5 Reliability and Scaling
+- Queue-based execution option (worker pool).
+- Backpressure propagation across tools and streams.
+- Retry policies and idempotency keys for runs.
+
+Deliverables:
+- Task queue interface + local worker implementation.
+- Backpressure + retry policy config.
+- Idempotency support on run creation.
+
+### 4.6 Platform DX and Ops
+- Production deployment guide (TLS, proxies, backups, migrations).
+- Migration tooling for schema upgrades.
+- Reference multi-tenant demo app and integration guide.
+
+Deliverables:
+- `docs/PRODUCTION_HARDENING.md` and migration runbook.
+- `docs/PLATFORM_BUILDER_GUIDE.md`.
+- Example reference app using the SDK.
+
+### Exit Criteria
+- Org scoping and RBAC enforced across API + storage.
+- Postgres event persistence with replay verified.
+- Quotas, audit logs, and retention policies enforced.
+- Production deployment guide published and validated.
+
+---
+
+## Phase 4 Backlog (Prioritized, Rough Estimates)
+
+1. Enforce org scoping across API + storage (runs/sessions/events). **(Completed)**  
+Estimate: 1-2 weeks.
+
+2. RBAC + token scopes (admin/developer/viewer).  
+Estimate: 1-2 weeks.
+
+3. Tool sandboxing + allowlists for filesystem/http tools.  
+Estimate: 1-2 weeks.
+
+4. Secrets management interface (env + file + vault-ready).  
+Estimate: 3-5 days.
+
+5. Postgres event persistence + replay endpoints (SSE/WS).  
+Estimate: 1-2 weeks.
+
+6. Retention policies + archiving for run events.  
+Estimate: 3-5 days.
+
+7. Run recovery for in-flight runs after restart.  
+Estimate: 3-5 days.
+
+8. Audit logs for admin actions and API key changes.  
+Estimate: 3-5 days.
+
+9. Data retention + deletion APIs.  
+Estimate: 1 week.
+
+10. PII redaction pipeline for logs/events.  
+Estimate: 3-5 days.
+
+11. Per-tenant model registry + fallback policies.  
+Estimate: 1-2 weeks.
+
+12. Quota enforcement for tokens/runs/sessions.  
+Estimate: 1 week.
+
+13. Prompt/policy versioning for safety controls.  
+Estimate: 3-5 days.
+
+14. Queue-based execution option + worker pool.  
+Estimate: 1-2 weeks.
+
+15. Backpressure propagation + retry policy config.  
+Estimate: 1 week.
+
+16. Idempotency keys for run creation.  
+Estimate: 3-5 days.
+
+17. Production deployment guide (TLS, proxies, backups, migrations).  
+Estimate: 1 week.
+
+18. Migration tooling and runbook.  
+Estimate: 3-5 days.
+
+19. Platform builder guide + reference multi-tenant demo app.  
+Estimate: 1-2 weeks.
+
+---
+
+## Phase 4 Validation Criteria
+- RBAC and org scoping enforced in tests for all endpoints and storage queries.
+- Event replay validated against Postgres storage with retention policy applied.
+- Quotas enforced with clear error responses and audit log entries.
+- Deployment guide verified with a Docker Compose smoke test.

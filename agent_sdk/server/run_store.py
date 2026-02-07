@@ -16,7 +16,7 @@ from agent_sdk.observability.run_logs import RunLogExporter
 @dataclass
 class RunBuffer:
     history: Deque[StreamEnvelope]
-    queue: asyncio.Queue
+    queue: Optional[asyncio.Queue]
     max_events: int
 
 
@@ -37,7 +37,7 @@ class RunEventStore:
             return
         self._runs[run_id] = RunBuffer(
             history=deque(maxlen=self._max_events),
-            queue=asyncio.Queue(maxsize=self._queue_size),
+            queue=None,
             max_events=self._max_events,
         )
 
@@ -55,6 +55,8 @@ class RunEventStore:
             except Exception:
                 # Exporter failures should not break streaming.
                 pass
+        if buffer.queue is None:
+            return
         try:
             buffer.queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -69,10 +71,20 @@ class RunEventStore:
             return []
         return list(self._runs[run_id].history)
 
+    def list_events_from(self, run_id: str, from_seq: Optional[int]) -> List[StreamEnvelope]:
+        if run_id not in self._runs:
+            return []
+        events = list(self._runs[run_id].history)
+        if from_seq is None:
+            return events
+        return [event for event in events if event.seq is None or event.seq >= from_seq]
+
     async def stream(self, run_id: str):
         if run_id not in self._runs:
             return
         buffer = self._runs[run_id]
+        if buffer.queue is None:
+            buffer.queue = asyncio.Queue(maxsize=self._queue_size)
         history = list(buffer.history)
         for event in history:
             yield event
@@ -81,6 +93,32 @@ class RunEventStore:
             if last.stream == StreamChannel.LIFECYCLE and last.event in {"end", "error", "timeout", "canceled"}:
                 return
         # Drain any existing queued events to avoid duplicates of history.
+        while not buffer.queue.empty():
+            try:
+                buffer.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        while True:
+            event = await buffer.queue.get()
+            yield event
+            if event.stream == StreamChannel.LIFECYCLE and event.event in {"end", "error", "timeout", "canceled"}:
+                break
+
+    async def stream_from(self, run_id: str, from_seq: Optional[int]):
+        if run_id not in self._runs:
+            return
+        buffer = self._runs[run_id]
+        if buffer.queue is None:
+            buffer.queue = asyncio.Queue(maxsize=self._queue_size)
+        history = list(buffer.history)
+        if from_seq is not None:
+            history = [event for event in history if event.seq is None or event.seq >= from_seq]
+        for event in history:
+            yield event
+        if history:
+            last = history[-1]
+            if last.stream == StreamChannel.LIFECYCLE and last.event in {"end", "error", "timeout", "canceled"}:
+                return
         while not buffer.queue.empty():
             try:
                 buffer.queue.get_nowait()
