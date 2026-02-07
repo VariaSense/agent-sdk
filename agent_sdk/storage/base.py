@@ -48,3 +48,21 @@ class StorageBackend(ABC):
     @abstractmethod
     def list_events(self, run_id: str, limit: int = 1000) -> List[StreamEnvelope]:
         raise NotImplementedError
+
+    @abstractmethod
+    def list_events_from(
+        self,
+        run_id: str,
+        from_seq: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[StreamEnvelope]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_events(self, run_id: str, before_seq: Optional[int] = None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def recover_in_flight_runs(self) -> int:
+        """Mark in-flight runs as recovered after a restart."""
+        raise NotImplementedError

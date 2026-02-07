@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional
 
 from agent_sdk.observability.stream_envelope import StreamEnvelope, StreamChannel
+from agent_sdk.storage.base import StorageBackend
 from agent_sdk.observability.run_logs import RunLogExporter
+from agent_sdk.observability.event_retention import EventRetentionPolicy
 
 
 @dataclass
@@ -26,11 +28,15 @@ class RunEventStore:
         max_events: int = 1000,
         queue_size: int = 200,
         exporters: Optional[List[RunLogExporter]] = None,
+        storage: Optional[StorageBackend] = None,
+        retention_policy: Optional[EventRetentionPolicy] = None,
     ):
         self._runs: Dict[str, RunBuffer] = {}
         self._max_events = max_events
         self._queue_size = queue_size
         self._exporters = exporters or []
+        self._storage = storage
+        self._retention_policy = retention_policy or EventRetentionPolicy()
 
     def create_run(self, run_id: str) -> None:
         if run_id in self._runs:
@@ -49,6 +55,14 @@ class RunEventStore:
             self.create_run(run_id)
         buffer = self._runs[run_id]
         buffer.history.append(event)
+        if self._storage is not None:
+            try:
+                self._storage.append_event(event)
+                cutoff = self._retention_policy.cutoff_seq(event.seq)
+                if cutoff is not None:
+                    self._storage.delete_events(run_id, before_seq=cutoff)
+            except Exception:
+                pass
         for exporter in self._exporters:
             try:
                 exporter.emit(event)

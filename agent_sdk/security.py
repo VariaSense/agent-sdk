@@ -2,10 +2,12 @@
 
 import os
 import logging
-from typing import Optional, Dict, Any
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, List
 from fastapi import HTTPException, Depends, Header
 
 logger = logging.getLogger(__name__)
+from agent_sdk.secrets import default_secrets_manager
 
 
 class APIKeyManager:
@@ -14,14 +16,19 @@ class APIKeyManager:
     def __init__(self):
         self.valid_keys = set()
         self.api_key: Optional[str] = None
+        self.key_metadata: Dict[str, "APIKeyInfo"] = {}
         self._load_keys()
 
     def _load_keys(self):
         """Load API keys from environment"""
-        api_key = os.getenv("API_KEY")
+        secrets = default_secrets_manager()
+        api_key = secrets.get("API_KEY")
         if api_key:
+            role = secrets.get("API_KEY_ROLE", "admin")
+            scopes = secrets.get("API_KEY_SCOPES", "")
+            scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
             self.api_key = api_key
-            self.valid_keys.add(api_key)
+            self.add_key(api_key, role=role, scopes=scope_list)
             logger.debug("API keys loaded from environment")
 
     def verify_key(self, key: str) -> bool:
@@ -41,10 +48,64 @@ class APIKeyManager:
         """Compatibility alias for verify_key."""
         return self.verify_key(key)
 
-    def add_key(self, key: str) -> None:
+    def add_key(
+        self,
+        key: str,
+        role: str = "developer",
+        scopes: Optional[List[str]] = None,
+        org_id: str = "default",
+    ) -> None:
         """Add a new API key to the valid set."""
         if key:
             self.valid_keys.add(key)
+        if scopes:
+            effective_scopes = scopes
+        else:
+            effective_scopes = default_scopes_for_role(role)
+        info = APIKeyInfo(key=key, role=role, scopes=effective_scopes, org_id=org_id)
+        self.key_metadata[key] = info
+
+    def get_key_info(self, key: str) -> Optional["APIKeyInfo"]:
+        return self.key_metadata.get(key)
+
+
+@dataclass(frozen=True)
+class APIKeyInfo:
+    key: str
+    role: str
+    scopes: List[str]
+    org_id: str
+
+
+SCOPE_ADMIN = "admin"
+SCOPE_RUN_READ = "runs:read"
+SCOPE_RUN_WRITE = "runs:write"
+SCOPE_SESSION_READ = "sessions:read"
+SCOPE_SESSION_WRITE = "sessions:write"
+SCOPE_TOOLS_READ = "tools:read"
+SCOPE_DEVICE_MANAGE = "devices:manage"
+SCOPE_CHANNEL_WRITE = "channels:write"
+
+
+ROLE_ADMIN = "admin"
+ROLE_DEVELOPER = "developer"
+ROLE_VIEWER = "viewer"
+
+
+def default_scopes_for_role(role: str) -> List[str]:
+    if role == ROLE_ADMIN:
+        return ["*"]
+    if role == ROLE_VIEWER:
+        return [SCOPE_RUN_READ, SCOPE_SESSION_READ, SCOPE_TOOLS_READ]
+    return [
+        SCOPE_RUN_READ,
+        SCOPE_RUN_WRITE,
+        SCOPE_SESSION_READ,
+        SCOPE_SESSION_WRITE,
+        SCOPE_TOOLS_READ,
+        SCOPE_DEVICE_MANAGE,
+        SCOPE_CHANNEL_WRITE,
+    ]
 
 
 _api_key_manager = None
@@ -80,6 +141,47 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     return x_api_key
+
+
+async def get_api_key_info(x_api_key: Optional[str] = Header(None)) -> APIKeyInfo:
+    if not x_api_key:
+        logger.warning("Request without API key")
+        raise HTTPException(status_code=401, detail="Missing API key in X-API-Key header")
+
+    manager = get_api_key_manager()
+    if not manager.verify_key(x_api_key):
+        logger.warning("Invalid API key attempted")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    info = manager.get_key_info(x_api_key)
+    if info is None:
+        info = APIKeyInfo(
+            key=x_api_key,
+            role=ROLE_DEVELOPER,
+            scopes=default_scopes_for_role(ROLE_DEVELOPER),
+            org_id="default",
+        )
+    return info
+
+
+def require_scopes(
+    scopes: Optional[List[str]] = None,
+    roles: Optional[List[str]] = None,
+):
+    async def _dependency(
+        key_info: APIKeyInfo = Depends(get_api_key_info),
+    ) -> APIKeyInfo:
+        if roles and key_info.role not in roles:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        if scopes:
+            if "*" in key_info.scopes:
+                return key_info
+            missing = [scope for scope in scopes if scope not in key_info.scopes]
+            if missing:
+                raise HTTPException(status_code=403, detail="Forbidden")
+        return key_info
+
+    return _dependency
 
 
 class InputSanitizer:

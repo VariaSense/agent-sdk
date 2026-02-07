@@ -173,6 +173,8 @@ class APIKeyCreateRequest(BaseModel):
 
     org_id: str = Field(..., min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=100)
+    role: str = Field(default="developer", min_length=1, max_length=50)
+    scopes: List[str] = Field(default_factory=list)
 
 
 class DeviceRegisterRequest(BaseModel):
@@ -187,3 +189,10 @@ class DevicePairRequest(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=200)
     pairing_code: str = Field(..., min_length=1, max_length=50)
     agent_id: str = Field(..., min_length=1, max_length=200)
+
+
+class ReplayEventsResponse(BaseModel):
+    """Response for event replay endpoints."""
+
+    events: List[Dict[str, Any]]
+    count: int

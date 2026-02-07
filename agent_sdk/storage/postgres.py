@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from agent_sdk.observability.stream_envelope import (
@@ -287,3 +288,104 @@ class PostgresStorage(StorageBackend):
                 )
                 for row in rows
             ]
+
+    def list_events_from(
+        self,
+        run_id: str,
+        from_seq: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[StreamEnvelope]:
+        if from_seq is None:
+            return self.list_events(run_id, limit=limit)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT run_id, session_id, org_id, stream, event, payload_json, timestamp, seq, status, metadata_json
+                FROM events WHERE run_id = %s AND (seq IS NULL OR seq >= %s)
+                ORDER BY id ASC LIMIT %s
+                """,
+                (run_id, from_seq, limit),
+            )
+            rows = cur.fetchall()
+            return [
+                StreamEnvelope(
+                    run_id=row[0],
+                    session_id=row[1],
+                    stream=StreamChannel(row[3]),
+                    event=row[4],
+                    payload=json.loads(row[5] or "{}"),
+                    timestamp=row[6],
+                    seq=row[7],
+                    status=row[8],
+                    metadata=json.loads(row[9] or "{}"),
+                )
+                for row in rows
+            ]
+
+    def delete_events(self, run_id: str, before_seq: Optional[int] = None) -> int:
+        with self._conn.cursor() as cur:
+            if before_seq is None:
+                cur.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
+            else:
+                cur.execute(
+                    """
+                    DELETE FROM events
+                    WHERE run_id = %s AND seq IS NOT NULL AND seq < %s
+                    """,
+                    (run_id, before_seq),
+                )
+            deleted = cur.rowcount
+        self._conn.commit()
+        return deleted
+
+    def recover_in_flight_runs(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT run_id, session_id, agent_id, org_id, model, created_at, started_at,
+                       tags_json, metadata_json
+                FROM runs
+                WHERE status IN (%s, %s)
+                """,
+                (RunStatus.RUNNING.value, RunStatus.ACCEPTED.value),
+            )
+            rows = cur.fetchall()
+            count = 0
+            for row in rows:
+                run_id = row[0]
+                session_id = row[1]
+                org_id = row[3] or "default"
+                metadata = json.loads(row[8] or "{}")
+                metadata.update({"recovered": True, "recovered_at": now})
+                cur.execute(
+                    "UPDATE runs SET status = %s, ended_at = %s, metadata_json = %s WHERE run_id = %s",
+                    (RunStatus.ERROR.value, now, json.dumps(metadata), run_id),
+                )
+                cur.execute("SELECT MAX(seq) FROM events WHERE run_id = %s", (run_id,))
+                max_seq_row = cur.fetchone()
+                max_seq = max_seq_row[0] if max_seq_row else None
+                next_seq = 0 if max_seq is None else max_seq + 1
+                cur.execute(
+                    """
+                    INSERT INTO events (
+                        run_id, session_id, org_id, stream, event, payload_json,
+                        timestamp, seq, status, metadata_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        session_id,
+                        org_id,
+                        StreamChannel.LIFECYCLE.value,
+                        "recovered",
+                        json.dumps({"reason": "server_restart"}),
+                        now,
+                        next_seq,
+                        RunStatus.ERROR.value,
+                        json.dumps({"org_id": org_id, "recovery": True}),
+                    ),
+                )
+                count += 1
+        self._conn.commit()
+        return count

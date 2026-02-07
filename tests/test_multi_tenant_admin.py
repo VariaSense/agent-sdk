@@ -36,8 +36,12 @@ def client(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
     security._api_key_manager = None
     with tempfile.TemporaryDirectory() as tmpdir:
+        audit_path = os.path.join(tmpdir, "audit.jsonl")
+        monkeypatch.setenv("AGENT_SDK_AUDIT_LOG_PATH", audit_path)
         app = create_app(config_path=_write_config(tmpdir))
-        yield TestClient(app)
+        client = TestClient(app)
+        client.audit_path = audit_path
+        yield client
 
 
 def test_admin_orgs_and_keys(client):
@@ -66,3 +70,15 @@ def test_admin_usage(client):
     assert usage.status_code == 200
     data = usage.json()
     assert any(item["org_id"] == "default" for item in data)
+
+
+def test_admin_audit_log_written(client):
+    created = client.post(
+        "/admin/api-keys",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "label": "audit-test"},
+    )
+    assert created.status_code == 200
+    assert os.path.exists(client.audit_path)
+    lines = open(client.audit_path, "r", encoding="utf-8").read().splitlines()
+    assert any('"action": "api_key.created"' in line for line in lines)

@@ -6,10 +6,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 from typing import List, Optional
 
-from agent_sdk.observability.stream_envelope import RunMetadata, SessionMetadata, StreamEnvelope, RunStatus, StreamChannel
+from datetime import datetime, timezone
+
+from agent_sdk.observability.stream_envelope import (
+    RunMetadata,
+    SessionMetadata,
+    StreamEnvelope,
+    RunStatus,
+    StreamChannel,
+)
 from agent_sdk.storage.base import StorageBackend
 
 
@@ -294,3 +301,104 @@ class SQLiteStorage(StorageBackend):
                     )
                 )
             return events
+
+    def list_events_from(
+        self,
+        run_id: str,
+        from_seq: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[StreamEnvelope]:
+        if from_seq is None:
+            return self.list_events(run_id, limit=limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM events
+                WHERE run_id = ? AND (seq IS NULL OR seq >= ?)
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (run_id, from_seq, limit),
+            ).fetchall()
+            events = []
+            for row in rows:
+                events.append(
+                    StreamEnvelope(
+                        run_id=row["run_id"],
+                        session_id=row["session_id"],
+                        stream=StreamChannel(row["stream"]),
+                        event=row["event"],
+                        payload=json.loads(row["payload_json"] or "{}"),
+                        timestamp=row["timestamp"],
+                        seq=row["seq"],
+                        status=row["status"],
+                        metadata=json.loads(row["metadata_json"] or "{}"),
+                    )
+                )
+            return events
+
+    def delete_events(self, run_id: str, before_seq: Optional[int] = None) -> int:
+        with self._connect() as conn:
+            if before_seq is None:
+                cur = conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+                return cur.rowcount
+            cur = conn.execute(
+                """
+                DELETE FROM events
+                WHERE run_id = ? AND seq IS NOT NULL AND seq < ?
+                """,
+                (run_id, before_seq),
+            )
+            return cur.rowcount
+
+    def recover_in_flight_runs(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_id, session_id, agent_id, org_id, model, created_at, started_at,
+                       tags_json, metadata_json
+                FROM runs
+                WHERE status IN (?, ?)
+                """,
+                (RunStatus.RUNNING.value, RunStatus.ACCEPTED.value),
+            ).fetchall()
+            count = 0
+            for row in rows:
+                metadata = json.loads(row["metadata_json"] or "{}")
+                metadata.update({"recovered": True, "recovered_at": now})
+                conn.execute(
+                    """
+                    UPDATE runs SET status = ?, ended_at = ?, metadata_json = ?
+                    WHERE run_id = ?
+                    """,
+                    (RunStatus.ERROR.value, now, json.dumps(metadata), row["run_id"]),
+                )
+                seq_row = conn.execute(
+                    "SELECT MAX(seq) AS max_seq FROM events WHERE run_id = ?",
+                    (row["run_id"],),
+                ).fetchone()
+                max_seq = seq_row["max_seq"] if seq_row else None
+                next_seq = 0 if max_seq is None else max_seq + 1
+                conn.execute(
+                    """
+                    INSERT INTO events (
+                        run_id, session_id, org_id, stream, event, payload_json,
+                        timestamp, seq, status, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["run_id"],
+                        row["session_id"],
+                        row["org_id"] or "default",
+                        StreamChannel.LIFECYCLE.value,
+                        "recovered",
+                        json.dumps({"reason": "server_restart"}),
+                        now,
+                        next_seq,
+                        RunStatus.ERROR.value,
+                        json.dumps({"org_id": row["org_id"] or "default", "recovery": True}),
+                    ),
+                )
+                count += 1
+            return count

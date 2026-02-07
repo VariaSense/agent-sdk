@@ -12,7 +12,18 @@ from agent_sdk.config.loader import load_config
 from agent_sdk.core.runtime import PlannerExecutorRuntime
 from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.plugins.loader import PluginLoader
-from agent_sdk.security import verify_api_key, get_api_key_manager
+from agent_sdk.security import (
+    verify_api_key,
+    get_api_key_manager,
+    require_scopes,
+    SCOPE_ADMIN,
+    SCOPE_RUN_READ,
+    SCOPE_RUN_WRITE,
+    SCOPE_SESSION_READ,
+    SCOPE_TOOLS_READ,
+    SCOPE_DEVICE_MANAGE,
+    SCOPE_CHANNEL_WRITE,
+)
 from agent_sdk.validators import (
     RunTaskRequest,
     TaskResponse,
@@ -22,6 +33,7 @@ from agent_sdk.validators import (
     APIKeyCreateRequest,
     DeviceRegisterRequest,
     DevicePairRequest,
+    ReplayEventsResponse,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
 from agent_sdk.observability.stream_envelope import (
@@ -34,6 +46,8 @@ from agent_sdk.observability.stream_envelope import (
     new_session_id,
 )
 from agent_sdk.observability.run_logs import create_run_log_exporters
+from agent_sdk.observability.event_retention import EventRetentionPolicy
+from agent_sdk.observability.audit_logs import AuditLogEntry, create_audit_loggers
 from agent_sdk.server.run_store import RunEventStore
 from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
@@ -69,12 +83,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             "yes",
             "on",
         }
-        run_store = RunEventStore(
-            exporters=create_run_log_exporters(
-                path=log_path,
-                emit_stdout=log_stdout,
-            )
-        )
+        audit_path = os.getenv("AGENT_SDK_AUDIT_LOG_PATH")
+        audit_stdout = os.getenv("AGENT_SDK_AUDIT_LOG_STDOUT", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         storage_backend = os.getenv("AGENT_SDK_STORAGE_BACKEND", "sqlite").lower()
         if storage_backend == "postgres":
             dsn = os.getenv("AGENT_SDK_POSTGRES_DSN")
@@ -86,10 +101,46 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         else:
             db_path = storage_path or os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
             storage = SQLiteStorage(db_path)
+        retention_policy = EventRetentionPolicy.from_env()
+        run_store = RunEventStore(
+            exporters=create_run_log_exporters(
+                path=log_path,
+                emit_stdout=log_stdout,
+            ),
+            storage=storage if storage_backend == "postgres" else None,
+            retention_policy=retention_policy,
+        )
         tenant_store = MultiTenantStore()
+        audit_logger = create_audit_loggers(path=audit_path, emit_stdout=audit_stdout)
         api_key_manager = get_api_key_manager()
         if api_key_manager.api_key:
-            tenant_store.register_api_key("default", api_key_manager.api_key, "env")
+            tenant_store.register_api_key(
+                "default",
+                api_key_manager.api_key,
+                "env",
+                role=os.getenv("API_KEY_ROLE", "admin"),
+                scopes=[s.strip() for s in os.getenv("API_KEY_SCOPES", "").split(",") if s.strip()],
+            )
+            audit_logger.emit(
+                AuditLogEntry(
+                    action="api_key.registered",
+                    actor="system",
+                    org_id="default",
+                    target_type="api_key",
+                    metadata={"source": "env"},
+                )
+            )
+        recovery_enabled = os.getenv("AGENT_SDK_RUN_RECOVERY_ENABLED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if recovery_enabled:
+            recovered = storage.recover_in_flight_runs()
+            if recovered:
+                logger.warning("Recovered %s in-flight runs after restart", recovered)
+
         device_registry = DeviceRegistry()
         logger.info("Application initialized successfully")
     except ConfigError as e:
@@ -125,6 +176,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     def _org_id_from_request(request: Request) -> str:
         return request.headers.get("X-Org-Id", "default")
+
+    def _audit_actor(request: Request) -> tuple[str, str]:
+        api_key = request.headers.get("X-API-Key", "")
+        info = get_api_key_manager().get_key_info(api_key)
+        if info:
+            return info.key, info.org_id
+        return "unknown", "default"
 
     # Add CORS middleware
     app.add_middleware(
@@ -184,11 +242,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     @app.websocket("/ws")
     async def gateway_ws(websocket: WebSocket):
         await gateway.handle_connection(websocket)
-
     app.state.run_store = run_store
     app.state.storage = storage
+    app.state.event_storage = storage if storage_backend == "postgres" else None
     app.state.tenant_store = tenant_store
     app.state.device_registry = device_registry
+    app.state.audit_logger = audit_logger
     gateway = GatewayServer(
         runtime=runtime,
         run_store=run_store,
@@ -230,7 +289,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     @app.post(
         "/run",
         response_model=TaskResponse,
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_WRITE]))],
         tags=["Tasks"]
     )
     async def run_task(req: RunTaskRequest, request: Request):
@@ -323,7 +382,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     # Streaming Task Execution Endpoint
     @app.post(
         "/run/stream",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_WRITE]))],
         tags=["Tasks"]
     )
     async def run_task_stream(req: RunTaskRequest, request: Request):
@@ -460,13 +519,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.get(
         "/run/{run_id}/events",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_READ]))],
         tags=["Tasks"]
     )
     async def stream_run_events(run_id: str, request: Request):
         """Stream events for a given run id."""
         if not run_store.has_run(run_id):
-            raise HTTPException(status_code=404, detail="Run not found")
+            if app.state.event_storage is None:
+                raise HTTPException(status_code=404, detail="Run not found")
         run = storage.get_run(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -474,7 +534,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             raise HTTPException(status_code=403, detail="Forbidden")
 
         async def event_generator():
-            async for event in run_store.stream(run_id):
+            if run_store.has_run(run_id):
+                async for event in run_store.stream(run_id):
+                    yield event.to_sse()
+                return
+            events = app.state.event_storage.list_events(run_id)  # type: ignore[union-attr]
+            for event in events:
                 yield event.to_sse()
 
         return StreamingResponse(
@@ -488,8 +553,27 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         )
 
     @app.get(
+        "/run/{run_id}/events/replay",
+        response_model=ReplayEventsResponse,
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_READ]))],
+        tags=["Tasks"],
+    )
+    async def replay_run_events(run_id: str, request: Request, from_seq: Optional[int] = None, limit: int = 1000):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if run.org_id != _org_id_from_request(request):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        if app.state.event_storage is None:
+            events = run_store.list_events_from(run_id, from_seq)
+        else:
+            events = app.state.event_storage.list_events_from(run_id, from_seq, limit=limit)
+        payload = [event.to_dict() for event in events[:limit]]
+        return ReplayEventsResponse(events=payload, count=len(payload))
+
+    @app.get(
         "/run/{run_id}",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_READ]))],
         tags=["Tasks"]
     )
     async def get_run(run_id: str, request: Request):
@@ -504,7 +588,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.get(
         "/sessions",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_SESSION_READ]))],
         tags=["Tasks"]
     )
     async def list_sessions(request: Request, limit: int = 100):
@@ -514,7 +598,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.get(
         "/sessions/{session_id}",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_SESSION_READ]))],
         tags=["Tasks"]
     )
     async def get_session(session_id: str, request: Request):
@@ -527,7 +611,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.post(
         "/channels/webhook",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_CHANNEL_WRITE]))],
         tags=["Channels"],
     )
     async def channel_webhook(req: ChannelMessageRequest, request: Request):
@@ -548,7 +632,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.post(
         "/devices/register",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_DEVICE_MANAGE]))],
         tags=["Devices"],
     )
     async def register_device(req: DeviceRegisterRequest):
@@ -561,7 +645,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.post(
         "/devices/pair",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_DEVICE_MANAGE]))],
         tags=["Devices"],
     )
     async def pair_device(req: DevicePairRequest):
@@ -572,40 +656,80 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     @app.get(
         "/admin/orgs",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
     )
-    async def list_orgs():
+    async def list_orgs(request: Request):
+        actor, org_id = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.orgs.list",
+                actor=actor,
+                org_id=org_id,
+                target_type="organization",
+            )
+        )
         return [asdict(org) for org in tenant_store.list_orgs()]
 
     @app.get(
         "/admin/api-keys",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
     )
-    async def list_api_keys(org_id: Optional[str] = None):
+    async def list_api_keys(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.api_keys.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="api_key",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
         return [asdict(record) for record in tenant_store.list_api_keys(org_id)]
 
     @app.post(
         "/admin/api-keys",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
     )
-    async def create_api_key(req: APIKeyCreateRequest):
-        record = tenant_store.create_api_key(req.org_id, req.label)
-        get_api_key_manager().add_key(record.key)
+    async def create_api_key(req: APIKeyCreateRequest, request: Request):
+        record = tenant_store.create_api_key(req.org_id, req.label, role=req.role, scopes=req.scopes)
+        get_api_key_manager().add_key(record.key, role=req.role, scopes=req.scopes, org_id=req.org_id)
+        actor, _ = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="api_key.created",
+                actor=actor,
+                org_id=req.org_id,
+                target_type="api_key",
+                target_id=record.key_id,
+                metadata={"label": req.label, "role": req.role, "scopes": req.scopes},
+            )
+        )
         return asdict(record)
 
     @app.get(
         "/admin/usage",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
     )
-    async def usage_summary(org_id: Optional[str] = None):
+    async def usage_summary(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.usage.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="usage",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
         return [asdict(summary) for summary in tenant_store.usage_summary(org_id)]
 
     # List Tools Endpoint
-    @app.get("/tools", tags=["Tools"])
+    @app.get("/tools", tags=["Tools"], dependencies=[Depends(require_scopes([SCOPE_TOOLS_READ]))])
     async def list_tools(api_key: str = Depends(verify_api_key)):
         """List available tools
         

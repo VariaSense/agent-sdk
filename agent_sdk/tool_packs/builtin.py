@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 from agent_sdk.core.tools import Tool, ToolRegistry, GLOBAL_TOOL_REGISTRY
 from agent_sdk.data_connectors.document import Document
@@ -18,6 +19,45 @@ from agent_sdk.memory.semantic_memory import MockEmbeddingProvider
 from agent_sdk.memory.persistence import SQLiteVectorStore
 
 SCHEMA_VERSION = "1.0"
+
+
+def _parse_allowlist(env_key: str) -> List[str]:
+    raw = os.getenv(env_key, "")
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
+def _is_path_allowed(path: str) -> bool:
+    allowlist = _parse_allowlist("AGENT_SDK_FS_ALLOWLIST")
+    if "*" in allowlist:
+        return True
+    if not allowlist:
+        return False
+    real_path = os.path.realpath(path)
+    for allowed in allowlist:
+        allowed_path = os.path.realpath(allowed)
+        try:
+            common = os.path.commonpath([real_path, allowed_path])
+        except ValueError:
+            continue
+        if common == allowed_path:
+            return True
+    return False
+
+
+def _is_url_allowed(url: str) -> bool:
+    allowlist = _parse_allowlist("AGENT_SDK_HTTP_ALLOWLIST")
+    if "*" in allowlist:
+        return True
+    if not allowlist:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = parsed.hostname or ""
+    for allowed in allowlist:
+        if host == allowed or host.endswith(f".{allowed}"):
+            return True
+    return False
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -31,6 +71,8 @@ def _filesystem_read(inputs: Dict[str, Any]) -> str:
     path = inputs.get("path")
     if not path:
         raise ValueError("path is required")
+    if not _is_path_allowed(path):
+        raise ValueError("path is not allowed by AGENT_SDK_FS_ALLOWLIST")
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -40,6 +82,8 @@ def _filesystem_write(inputs: Dict[str, Any]) -> str:
     content = inputs.get("content", "")
     if not path:
         raise ValueError("path is required")
+    if not _is_path_allowed(path):
+        raise ValueError("path is not allowed by AGENT_SDK_FS_ALLOWLIST")
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     return "ok"
@@ -49,6 +93,8 @@ def _http_fetch(inputs: Dict[str, Any]) -> str:
     url = inputs.get("url")
     if not url:
         raise ValueError("url is required")
+    if not _is_url_allowed(url):
+        raise ValueError("url is not allowed by AGENT_SDK_HTTP_ALLOWLIST")
     req = Request(url, headers={"User-Agent": "agent-sdk"})
     with urlopen(req, timeout=10) as resp:
         data = resp.read()

@@ -7,7 +7,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
-- Phase 4: Production hardening added, not started.
+- Phase 4: Production hardening in progress (tasks 1-8 complete).
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -413,25 +413,25 @@ Deliverables:
 1. Enforce org scoping across API + storage (runs/sessions/events). **(Completed)**  
 Estimate: 1-2 weeks.
 
-2. RBAC + token scopes (admin/developer/viewer).  
+2. RBAC + token scopes (admin/developer/viewer). **(Completed)**  
 Estimate: 1-2 weeks.
 
-3. Tool sandboxing + allowlists for filesystem/http tools.  
+3. Tool sandboxing + allowlists for filesystem/http tools. **(Completed)**  
 Estimate: 1-2 weeks.
 
-4. Secrets management interface (env + file + vault-ready).  
+4. Secrets management interface (env + file + vault-ready). **(Completed)**  
 Estimate: 3-5 days.
 
-5. Postgres event persistence + replay endpoints (SSE/WS).  
+5. Postgres event persistence + replay endpoints (SSE/WS). **(Completed)**  
 Estimate: 1-2 weeks.
 
-6. Retention policies + archiving for run events.  
+6. Retention policies + archiving for run events. **(Completed)**  
 Estimate: 3-5 days.
 
-7. Run recovery for in-flight runs after restart.  
+7. Run recovery for in-flight runs after restart. **(Completed)**  
 Estimate: 3-5 days.
 
-8. Audit logs for admin actions and API key changes.  
+8. Audit logs for admin actions and API key changes. **(Completed)**  
 Estimate: 3-5 days.
 
 9. Data retention + deletion APIs.  
