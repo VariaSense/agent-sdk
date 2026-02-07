@@ -34,6 +34,8 @@ class APIKeyRecord:
     org_id: str
     key: str
     label: str
+    role: str = "developer"
+    scopes: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     active: bool = True
 
@@ -80,18 +82,32 @@ class MultiTenantStore:
             return list(self._users.values())
         return [user for user in self._users.values() if user.org_id == org_id]
 
-    def create_api_key(self, org_id: str, label: str) -> APIKeyRecord:
+    def create_api_key(self, org_id: str, label: str, role: str = "developer", scopes: Optional[List[str]] = None) -> APIKeyRecord:
         self.ensure_org(org_id)
         key = f"sk_{secrets.token_urlsafe(24)}"
         key_id = f"key_{secrets.token_hex(6)}"
-        record = APIKeyRecord(key_id=key_id, org_id=org_id, key=key, label=label)
+        record = APIKeyRecord(
+            key_id=key_id,
+            org_id=org_id,
+            key=key,
+            label=label,
+            role=role,
+            scopes=scopes or [],
+        )
         self._keys[key_id] = record
         return record
 
-    def register_api_key(self, org_id: str, key: str, label: str) -> APIKeyRecord:
+    def register_api_key(self, org_id: str, key: str, label: str, role: str = "developer", scopes: Optional[List[str]] = None) -> APIKeyRecord:
         self.ensure_org(org_id)
         key_id = f"key_{secrets.token_hex(6)}"
-        record = APIKeyRecord(key_id=key_id, org_id=org_id, key=key, label=label)
+        record = APIKeyRecord(
+            key_id=key_id,
+            org_id=org_id,
+            key=key,
+            label=label,
+            role=role,
+            scopes=scopes or [],
+        )
         self._keys[key_id] = record
         return record
 
