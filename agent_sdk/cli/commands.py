@@ -112,6 +112,16 @@ def list_agents(config: str = "config.yaml"):
     for name in cfg.get("agents", {}).keys():
         typer.echo(f"- {name}")
 
+@init_cmd.callback(invoke_without_command=True)
+def init_default(
+    ctx: typer.Context,
+    name: str = "agent-app",
+):
+    """Initialize a new agent project."""
+    if ctx.invoked_subcommand is None:
+        init_project(name)
+
+
 @init_cmd.command("project")
 def init_project(name: str = "agent-app"):
     import os, textwrap
@@ -148,6 +158,16 @@ def init_project(name: str = "agent-app"):
         @tool("echo", "Echo back input")
         def echo(args):
             return args["text"]
+        """).strip() + "\n")
+
+    with open(os.path.join(name, ".env.example"), "w") as f:
+        f.write("OPENAI_API_KEY=\n")
+
+    with open(os.path.join(name, "README.md"), "w") as f:
+        f.write(textwrap.dedent(f"""
+        # {name}
+
+        Example agent-sdk project scaffold.
         """).strip() + "\n")
 
     typer.echo(f"Initialized agent project in ./{name}")

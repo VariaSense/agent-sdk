@@ -19,6 +19,19 @@ For Postgres:
 AGENT_SDK_STORAGE_BACKEND=postgres AGENT_SDK_POSTGRES_DSN=postgresql://... python scripts/migrate_storage.py
 ```
 
+### Control Plane (Optional)
+To initialize the control plane storage:
+
+```bash
+AGENT_SDK_CONTROL_PLANE_BACKEND=sqlite AGENT_SDK_CONTROL_PLANE_DB_PATH=control_plane.db python scripts/migrate_storage.py
+```
+
+For Postgres:
+
+```bash
+AGENT_SDK_CONTROL_PLANE_BACKEND=postgres AGENT_SDK_CONTROL_PLANE_DSN=postgresql://... python scripts/migrate_storage.py
+```
+
 ## Upgrade Workflow
 1. Stop the API server.
 2. Backup database.

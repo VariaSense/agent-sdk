@@ -294,6 +294,13 @@ TOOL_PACKS: Dict[str, List[str]] = {
     "coordination": [],
 }
 
+TOOL_PACK_VERSIONS: Dict[str, str] = {
+    "core": "1.0.0",
+    "utilities": "1.0.0",
+    "rag": "1.0.0",
+    "coordination": "1.0.0",
+}
+
 
 def register_builtin_tool_packs(
     registry: ToolRegistry = GLOBAL_TOOL_REGISTRY,

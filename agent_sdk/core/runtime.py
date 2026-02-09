@@ -29,8 +29,15 @@ class PlannerExecutorRuntime:
         self._prepare_run_context(session_id=session_id, run_id=run_id)
         task_msg = make_message("user", task_text)
         self.planner.context.apply_run_metadata(task_msg)
-        plan_msg = self.planner.step(task_msg)
-        exec_msg = self.executor.step(plan_msg)
+        observability = self.planner.context.config.get("observability")
+        if observability:
+            with observability.trace_agent_execution(self.planner.name, task_text):
+                plan_msg = self.planner.step(task_msg)
+            with observability.trace_agent_execution(self.executor.name, task_text):
+                exec_msg = self.executor.step(plan_msg)
+        else:
+            plan_msg = self.planner.step(task_msg)
+            exec_msg = self.executor.step(plan_msg)
         self.planner.context.apply_run_metadata(plan_msg)
         self.executor.context.apply_run_metadata(exec_msg)
         return [plan_msg, exec_msg]
@@ -44,8 +51,15 @@ class PlannerExecutorRuntime:
         self._prepare_run_context(session_id=session_id, run_id=run_id)
         task_msg = make_message("user", task_text)
         self.planner.context.apply_run_metadata(task_msg)
-        plan_msg = await self.planner.step_async(task_msg)
-        exec_msg = await self.executor.step_async(plan_msg)
+        observability = self.planner.context.config.get("observability")
+        if observability:
+            with observability.trace_agent_execution(self.planner.name, task_text):
+                plan_msg = await self.planner.step_async(task_msg)
+            with observability.trace_agent_execution(self.executor.name, task_text):
+                exec_msg = await self.executor.step_async(plan_msg)
+        else:
+            plan_msg = await self.planner.step_async(task_msg)
+            exec_msg = await self.executor.step_async(plan_msg)
         self.planner.context.apply_run_metadata(plan_msg)
         self.executor.context.apply_run_metadata(exec_msg)
         return [plan_msg, exec_msg]

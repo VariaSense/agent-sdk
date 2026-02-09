@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import secrets
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_sdk.storage.control_plane import ControlPlaneBackend
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -38,6 +43,10 @@ class APIKeyRecord:
     scopes: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     active: bool = True
+    expires_at: Optional[str] = None
+    rotated_at: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = None
+    ip_allowlist: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -64,9 +73,10 @@ class ModelPolicy:
 
 
 class MultiTenantStore:
-    """Simple in-memory registry for multi-tenant admin surfaces."""
+    """Registry for multi-tenant admin surfaces (optionally backed by control plane storage)."""
 
-    def __init__(self):
+    def __init__(self, backend: Optional["ControlPlaneBackend"] = None):
+        self._backend = backend
         self._orgs: Dict[str, Organization] = {}
         self._users: Dict[str, User] = {}
         self._keys: Dict[str, APIKeyRecord] = {}
@@ -77,6 +87,8 @@ class MultiTenantStore:
         self.ensure_org("default", "Default Org")
 
     def ensure_org(self, org_id: str, name: Optional[str] = None) -> Organization:
+        if self._backend is not None:
+            return self._backend.ensure_org(org_id, name)
         if org_id in self._orgs:
             return self._orgs[org_id]
         org = Organization(org_id=org_id, name=name or org_id)
@@ -87,21 +99,36 @@ class MultiTenantStore:
         return org
 
     def list_orgs(self) -> List[Organization]:
+        if self._backend is not None:
+            return self._backend.list_orgs()
         return list(self._orgs.values())
 
     def create_user(self, org_id: str, name: str) -> User:
         self.ensure_org(org_id)
         user_id = f"user_{secrets.token_hex(8)}"
         user = User(user_id=user_id, org_id=org_id, name=name)
+        if self._backend is not None:
+            return self._backend.create_user(org_id, user)
         self._users[user_id] = user
         return user
 
     def list_users(self, org_id: Optional[str] = None) -> List[User]:
+        if self._backend is not None:
+            return self._backend.list_users(org_id)
         if org_id is None:
             return list(self._users.values())
         return [user for user in self._users.values() if user.org_id == org_id]
 
-    def create_api_key(self, org_id: str, label: str, role: str = "developer", scopes: Optional[List[str]] = None) -> APIKeyRecord:
+    def create_api_key(
+        self,
+        org_id: str,
+        label: str,
+        role: str = "developer",
+        scopes: Optional[List[str]] = None,
+        expires_at: Optional[str] = None,
+        rate_limit_per_minute: Optional[int] = None,
+        ip_allowlist: Optional[List[str]] = None,
+    ) -> APIKeyRecord:
         self.ensure_org(org_id)
         key = f"sk_{secrets.token_urlsafe(24)}"
         key_id = f"key_{secrets.token_hex(6)}"
@@ -112,11 +139,26 @@ class MultiTenantStore:
             label=label,
             role=role,
             scopes=scopes or [],
+            expires_at=expires_at,
+            rate_limit_per_minute=rate_limit_per_minute,
+            ip_allowlist=ip_allowlist or [],
         )
+        if self._backend is not None:
+            return self._backend.create_api_key(record)
         self._keys[key_id] = record
         return record
 
-    def register_api_key(self, org_id: str, key: str, label: str, role: str = "developer", scopes: Optional[List[str]] = None) -> APIKeyRecord:
+    def register_api_key(
+        self,
+        org_id: str,
+        key: str,
+        label: str,
+        role: str = "developer",
+        scopes: Optional[List[str]] = None,
+        expires_at: Optional[str] = None,
+        rate_limit_per_minute: Optional[int] = None,
+        ip_allowlist: Optional[List[str]] = None,
+    ) -> APIKeyRecord:
         self.ensure_org(org_id)
         key_id = f"key_{secrets.token_hex(6)}"
         record = APIKeyRecord(
@@ -126,14 +168,51 @@ class MultiTenantStore:
             label=label,
             role=role,
             scopes=scopes or [],
+            expires_at=expires_at,
+            rate_limit_per_minute=rate_limit_per_minute,
+            ip_allowlist=ip_allowlist or [],
         )
+        if self._backend is not None:
+            return self._backend.create_api_key(record)
         self._keys[key_id] = record
         return record
 
     def list_api_keys(self, org_id: Optional[str] = None) -> List[APIKeyRecord]:
+        if self._backend is not None:
+            return self._backend.list_api_keys(org_id)
         if org_id is None:
             return list(self._keys.values())
         return [record for record in self._keys.values() if record.org_id == org_id]
+
+    def rotate_api_key(self, key_id: str) -> Optional[Tuple[APIKeyRecord, APIKeyRecord]]:
+        records = self.list_api_keys()
+        current = next((r for r in records if r.key_id == key_id), None)
+        if current is None:
+            return None
+        rotated_at = _now_iso()
+        if self._backend is not None:
+            self._backend.deactivate_api_key(key_id, rotated_at)
+        else:
+            self._keys[key_id] = APIKeyRecord(
+                key_id=current.key_id,
+                org_id=current.org_id,
+                key=current.key,
+                label=current.label,
+                role=current.role,
+                scopes=current.scopes,
+                created_at=current.created_at,
+                active=False,
+                expires_at=current.expires_at,
+                rotated_at=rotated_at,
+            )
+        new_record = self.create_api_key(
+            current.org_id,
+            label=current.label,
+            role=current.role,
+            scopes=current.scopes,
+            expires_at=current.expires_at,
+        )
+        return new_record, current
 
     def record_run(self, org_id: str) -> None:
         self.ensure_org(org_id)
@@ -156,10 +235,14 @@ class MultiTenantStore:
 
     def set_quota(self, org_id: str, limits: QuotaLimits) -> None:
         self.ensure_org(org_id)
+        if self._backend is not None:
+            return self._backend.set_quota(org_id, limits)
         self._quotas[org_id] = limits
 
     def get_quota(self, org_id: str) -> QuotaLimits:
         self.ensure_org(org_id)
+        if self._backend is not None:
+            return self._backend.get_quota(org_id)
         return self._quotas.get(org_id, QuotaLimits())
 
     def check_quota(self, org_id: str, new_run: bool = False, new_session: bool = False, tokens: int = 0) -> Tuple[bool, Optional[str]]:
@@ -181,10 +264,15 @@ class MultiTenantStore:
         filtered_allowed = [m for m in allowed_models if m in self._model_catalog] if self._model_catalog else allowed_models
         fallback = fallback_models or filtered_allowed
         policy = ModelPolicy(allowed_models=filtered_allowed, fallback_models=fallback)
+        if self._backend is not None:
+            self._backend.set_model_policy(org_id, policy)
+            return policy
         self._model_policies[org_id] = policy
         return policy
 
     def get_model_policy(self, org_id: str) -> Optional[ModelPolicy]:
+        if self._backend is not None:
+            return self._backend.get_model_policy(org_id)
         return self._model_policies.get(org_id)
 
     def resolve_model(self, org_id: str, requested: Optional[str]) -> Optional[str]:

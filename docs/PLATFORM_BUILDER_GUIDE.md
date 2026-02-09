@@ -24,3 +24,7 @@ This guide shows how to build a multi-tenant platform on top of agent-sdk.
 
 ## Example App
 See `examples/multi_tenant_demo` for a reference setup.
+
+## Client SDKs
+- Python: `clients/python/agent_sdk_client.py`
+- JS: `clients/js/index.js`

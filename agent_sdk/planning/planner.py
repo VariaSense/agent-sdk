@@ -146,13 +146,24 @@ class PlannerAgent(Agent):
 
             # Retry LLM call with backoff
             start = time.time()
-            resp = await retry_with_backoff(
-                self.llm.generate_async,
-                max_retries=3,
-                base_delay=1.0,
-                messages=prompt,
-                model_config=self.context.model_config,
-            )
+            observability = self.context.config.get("observability")
+            if observability and self.context.model_config:
+                with observability.trace_model_call(self.context.model_config.name, self.context.model_config.provider):
+                    resp = await retry_with_backoff(
+                        self.llm.generate_async,
+                        max_retries=3,
+                        base_delay=1.0,
+                        messages=prompt,
+                        model_config=self.context.model_config,
+                    )
+            else:
+                resp = await retry_with_backoff(
+                    self.llm.generate_async,
+                    max_retries=3,
+                    base_delay=1.0,
+                    messages=prompt,
+                    model_config=self.context.model_config,
+                )
             end = time.time()
             latency_ms = (end - start) * 1000
 

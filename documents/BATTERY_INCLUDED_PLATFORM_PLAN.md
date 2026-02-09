@@ -8,6 +8,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
 - Phase 4: Production hardening complete.
+- Phase 5: Production-grade platform maturity complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -474,3 +475,118 @@ Estimate: 1-2 weeks.
 - Event replay validated against Postgres storage with retention policy applied.
 - Quotas enforced with clear error responses and audit log entries.
 - Deployment guide verified with a Docker Compose smoke test.
+
+---
+
+## Phase 5: Production-Grade Platform Maturity (optional, 10-16 weeks)
+
+### Objective
+Deliver a production-grade AI agent SDK with durable control plane, robust provider integrations, strong security, and first-party client SDKs.
+
+### 5.1 Persistent Control Plane
+- Persist orgs/users/API keys/quotas/model policies in Postgres.
+- Admin API refactor to read/write durable state.
+- Migration scripts and versioned schema for control plane.
+
+Deliverables:
+- `agent_sdk/storage/control_plane` schema + adapters.
+- Updated admin APIs backed by Postgres.
+- Migration scripts for control plane.
+
+### 5.2 Durable Execution & Orchestration
+- Durable queue backend (Redis/PG/SQS) with worker supervisor.
+- Run state machine (queued/running/paused/retrying/canceled).
+- Dead-letter handling and replay tools.
+
+Deliverables:
+- `agent_sdk/execution/queue_backends` with Redis/PG adapter.
+- Run lifecycle state machine + supervisor.
+- Worker health + DLQ tooling.
+
+### 5.3 Provider Integrations & Tracing
+- Real OpenAI/Anthropic/Azure providers with streaming.
+- Provider-specific retry and error normalization.
+- OpenTelemetry tracing across runs/tools/providers.
+
+Deliverables:
+- `agent_sdk/llm/providers/*` integrations.
+- `docs/PROVIDERS.md` with configuration examples.
+- End-to-end tracing demo.
+
+### 5.4 Security & Auth Hardening
+- OIDC/JWT support for API access.
+- API key rotation/expiration.
+- Per-key rate limits and IP allowlists.
+
+Deliverables:
+- `agent_sdk/security/oidc` integration.
+- Admin APIs for key rotation/expiry.
+- Rate limit enforcement per key.
+
+### 5.5 SDK Ergonomics & Tool Ecosystem
+- Project scaffolding CLI (`agent-sdk init`).
+- Tool pack versioning and signed manifests.
+- Managed plugin catalog (optional).
+
+Deliverables:
+- CLI scaffolding.
+- Tool pack manifest spec + signing.
+- Reference tool catalog.
+
+### 5.6 Client SDKs
+- First-party Python and JS clients with streaming helpers.
+- Typed models aligned with API schemas.
+
+Deliverables:
+- `clients/python` and `clients/js`.
+- Docs and examples.
+
+### Exit Criteria
+- Control plane data is durable and migrations are automated.
+- Queue execution is durable with retry and DLQ.
+- Provider integrations support streaming + tracing.
+- Auth supports OIDC/JWT and key rotation.
+- Client SDKs published with docs.
+
+---
+
+## Phase 5 Backlog (Prioritized, Rough Estimates)
+
+1. Persistent control plane (orgs/users/keys/quotas/policies in Postgres). **(Completed)**  
+Estimate: 2-3 weeks.
+
+2. Durable queue backend + worker supervisor + DLQ. **(Completed)**  
+Estimate: 2-3 weeks.
+
+3. Provider integrations (OpenAI/Anthropic/Azure) + error normalization. **(Completed)**  
+Estimate: 2-3 weeks.
+
+4. OTel tracing across runtime/tool/provider. **(Completed)**  
+Estimate: 1-2 weeks.
+
+5. OIDC/JWT auth + API key rotation/expiration. **(Completed)**  
+Estimate: 1-2 weeks.
+
+6. Per-key rate limits + IP allowlists. **(Completed)**  
+Estimate: 1 week.
+
+7. CLI scaffolding (`agent-sdk init`). **(Completed)**  
+Estimate: 3-5 days.
+
+8. Tool pack manifest versioning + signing. **(Completed)**  
+Estimate: 1 week.
+
+9. Client SDKs (Python + JS). **(Completed)**  
+Estimate: 2-3 weeks.
+
+10. Reference provider + tracing demo app. **(Completed)**  
+Estimate: 3-5 days.
+
+---
+
+## Phase 5 Validation Criteria
+- Tenant control plane persists across restarts and migrations.
+- Queue execution supports retry and DLQ in integration tests.
+- Provider streaming works with tracing enabled.
+- Auth supports OIDC/JWT and key rotation in tests.
+- Client SDKs pass integration tests against local server.

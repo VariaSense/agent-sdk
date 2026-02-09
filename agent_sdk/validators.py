@@ -175,6 +175,9 @@ class APIKeyCreateRequest(BaseModel):
     label: str = Field(..., min_length=1, max_length=100)
     role: str = Field(default="developer", min_length=1, max_length=50)
     scopes: List[str] = Field(default_factory=list)
+    expires_at: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = Field(default=None, ge=1)
+    ip_allowlist: List[str] = Field(default_factory=list)
 
 
 class DeviceRegisterRequest(BaseModel):

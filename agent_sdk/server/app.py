@@ -53,9 +53,11 @@ from agent_sdk.observability.run_logs import create_run_log_exporters
 from agent_sdk.observability.event_retention import EventRetentionPolicy
 from agent_sdk.observability.audit_logs import AuditLogEntry, create_audit_loggers
 from agent_sdk.observability.redaction import RedactionPolicy, Redactor
+from agent_sdk.observability.otel import ObservabilityManager
 from agent_sdk.core.streaming import TokenCounter
 from agent_sdk.core.retry import RetryConfig, retry_with_backoff
 from agent_sdk.execution.queue import ExecutionQueue
+from agent_sdk.execution.durable_queue import DurableExecutionQueue, SQLiteQueueBackend
 from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
 from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
@@ -63,6 +65,7 @@ from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
 from agent_sdk.server.device_registry import DeviceRegistry
 from agent_sdk.server.multi_tenant import MultiTenantStore, QuotaLimits
+from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlPlane
 from agent_sdk.server.channels import handle_web_channel
 from agent_sdk.server.admin_ui import ADMIN_HTML
 
@@ -86,6 +89,16 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         loader.load()
         planner, executor = load_config(config_path, MockLLMClient())
         runtime = PlannerExecutorRuntime(planner, executor)
+        tracing_enabled = os.getenv("AGENT_SDK_TRACING_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        observability = ObservabilityManager(service_name="agent-sdk") if tracing_enabled else None
+        if observability:
+            planner.context.config["observability"] = observability
+            executor.context.config["observability"] = observability
         log_path = os.getenv("AGENT_SDK_RUN_LOG_PATH")
         log_stdout = os.getenv("AGENT_SDK_RUN_LOG_STDOUT", "").lower() in {
             "1",
@@ -127,18 +140,41 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             retention_policy=retention_policy,
             redactor=redactor,
         )
-        tenant_store = MultiTenantStore()
+        control_plane_backend = os.getenv("AGENT_SDK_CONTROL_PLANE_BACKEND", "memory").lower()
+        control_plane = None
+        if control_plane_backend == "postgres":
+            dsn = os.getenv("AGENT_SDK_CONTROL_PLANE_DSN") or os.getenv("AGENT_SDK_POSTGRES_DSN")
+            if not dsn:
+                raise ConfigError("AGENT_SDK_CONTROL_PLANE_DSN is required for postgres control plane")
+            control_plane = PostgresControlPlane(dsn)
+        elif control_plane_backend == "sqlite":
+            cp_path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
+            control_plane = SQLiteControlPlane(cp_path)
+        tenant_store = MultiTenantStore(control_plane)
         try:
             tenant_store.set_model_catalog(load_model_names(config_path))
         except Exception:
             pass
         prompt_registry = PromptPolicyRegistry()
         execution_mode = os.getenv("AGENT_SDK_EXECUTION_MODE", "direct").lower()
-        execution_queue = (
-            ExecutionQueue(worker_count=int(os.getenv("AGENT_SDK_WORKER_COUNT", "2")))
-            if execution_mode == "queue"
-            else None
-        )
+        queue_backend = os.getenv("AGENT_SDK_QUEUE_BACKEND", "memory").lower()
+        durable_queue = None
+        execution_queue = None
+        if execution_mode == "queue":
+            if queue_backend == "sqlite":
+                queue_path = os.getenv("AGENT_SDK_QUEUE_DB_PATH", "queue.db")
+                durable_queue = DurableExecutionQueue(
+                    backend=SQLiteQueueBackend(queue_path),
+                    handler=lambda payload: runtime.run_async(
+                        payload["task"],
+                        session_id=payload["session_id"],
+                        run_id=payload["run_id"],
+                    ),
+                    poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
+                    max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
+                )
+            else:
+                execution_queue = ExecutionQueue(worker_count=int(os.getenv("AGENT_SDK_WORKER_COUNT", "2")))
         retry_config = RetryConfig(
             max_retries=int(os.getenv("AGENT_SDK_RETRY_MAX", "1")),
             base_delay=float(os.getenv("AGENT_SDK_RETRY_BASE_DELAY", "0.5")),
@@ -161,6 +197,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 "env",
                 role=os.getenv("API_KEY_ROLE", "admin"),
                 scopes=[s.strip() for s in os.getenv("API_KEY_SCOPES", "").split(",") if s.strip()],
+                expires_at=os.getenv("API_KEY_EXPIRES_AT"),
             )
             audit_logger.emit(
                 AuditLogEntry(
@@ -240,6 +277,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 exponential_base=retry_config.exponential_base,
             )
 
+        if durable_queue is not None:
+            return await durable_queue.submit(
+                {"task": task, "session_id": session_id, "run_id": run_id}
+            )
         if execution_queue is not None:
             return await execution_queue.submit(_invoke_with_retry)
         return await _invoke_with_retry()
@@ -310,8 +351,19 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.audit_logger = audit_logger
     app.state.prompt_registry = prompt_registry
     app.state.execution_queue = execution_queue
+    app.state.durable_queue = durable_queue
     app.state.retry_config = retry_config
     app.state.idempotency_store = idempotency_store
+
+    @app.on_event("startup")
+    async def _start_workers():
+        if durable_queue is not None:
+            await durable_queue.start()
+
+    @app.on_event("shutdown")
+    async def _stop_workers():
+        if durable_queue is not None:
+            await durable_queue.stop()
     gateway = GatewayServer(
         runtime=runtime,
         run_store=run_store,
@@ -790,8 +842,24 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         tags=["Admin"],
     )
     async def create_api_key(req: APIKeyCreateRequest, request: Request):
-        record = tenant_store.create_api_key(req.org_id, req.label, role=req.role, scopes=req.scopes)
-        get_api_key_manager().add_key(record.key, role=req.role, scopes=req.scopes, org_id=req.org_id)
+        record = tenant_store.create_api_key(
+            req.org_id,
+            req.label,
+            role=req.role,
+            scopes=req.scopes,
+            expires_at=req.expires_at,
+            rate_limit_per_minute=req.rate_limit_per_minute,
+            ip_allowlist=req.ip_allowlist,
+        )
+        get_api_key_manager().add_key(
+            record.key,
+            role=req.role,
+            scopes=req.scopes,
+            org_id=req.org_id,
+            expires_at=req.expires_at,
+            rate_limit_per_minute=req.rate_limit_per_minute,
+            ip_allowlist=req.ip_allowlist,
+        )
         actor, _ = _audit_actor(request)
         audit_logger.emit(
             AuditLogEntry(
@@ -801,6 +869,37 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 target_type="api_key",
                 target_id=record.key_id,
                 metadata={"label": req.label, "role": req.role, "scopes": req.scopes},
+            )
+        )
+        return asdict(record)
+
+    @app.post(
+        "/admin/api-keys/{key_id}/rotate",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def rotate_api_key(key_id: str, request: Request):
+        rotated = tenant_store.rotate_api_key(key_id)
+        if not rotated:
+            raise HTTPException(status_code=404, detail="API key not found")
+        record, old_record = rotated
+        manager = get_api_key_manager()
+        manager.remove_key(old_record.key)
+        manager.add_key(
+            record.key,
+            role=record.role,
+            scopes=record.scopes,
+            org_id=record.org_id,
+            expires_at=record.expires_at,
+        )
+        actor, _ = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="api_key.rotated",
+                actor=actor,
+                org_id=record.org_id,
+                target_type="api_key",
+                target_id=record.key_id,
             )
         )
         return asdict(record)

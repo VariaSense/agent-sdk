@@ -5,6 +5,9 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Security and Access Control
 - Org scoping enforced via `X-Org-Id`.
 - RBAC and scopes via API keys (`API_KEY_ROLE`, `API_KEY_SCOPES`).
+- JWT auth (HS256): `AGENT_SDK_JWT_ENABLED=true`, `AGENT_SDK_JWT_SECRET=...`.
+- API key rotation via `/admin/api-keys/{key_id}/rotate`.
+- Per-key rate limit and IP allowlist via admin API key creation.
 - Tool allowlists: `AGENT_SDK_FS_ALLOWLIST`, `AGENT_SDK_HTTP_ALLOWLIST`.
 
 ## Durability and Replay
@@ -24,9 +27,13 @@ This guide documents the production-grade features added in Phase 4 and how to e
 
 ## Reliability
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
+- Durable queue backend: `AGENT_SDK_QUEUE_BACKEND=sqlite`, `AGENT_SDK_QUEUE_DB_PATH=queue.db`.
 - Retry policy: `AGENT_SDK_RETRY_MAX`, `AGENT_SDK_RETRY_BASE_DELAY`, `AGENT_SDK_RETRY_MAX_DELAY`.
 - Backpressure: `AGENT_SDK_STREAM_QUEUE_SIZE`, `AGENT_SDK_STREAM_MAX_EVENTS`.
 - Idempotency for run creation: `Idempotency-Key` header.
+
+## Tool Packs
+- Signed manifests: `AGENT_SDK_TOOL_MANIFEST_SECRET`.
 
 ## Operations Checklist
 1. Configure storage and backups.

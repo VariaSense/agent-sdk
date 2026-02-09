@@ -2,9 +2,14 @@
 
 import os
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import base64
+import hmac
+import hashlib
+import json
 from typing import Optional, Dict, Any, List
-from fastapi import HTTPException, Depends, Header
+from fastapi import HTTPException, Depends, Header, Request
 
 logger = logging.getLogger(__name__)
 from agent_sdk.secrets import default_secrets_manager
@@ -17,6 +22,7 @@ class APIKeyManager:
         self.valid_keys = set()
         self.api_key: Optional[str] = None
         self.key_metadata: Dict[str, "APIKeyInfo"] = {}
+        self._rate_limiter = APIKeyRateLimiter()
         self._load_keys()
 
     def _load_keys(self):
@@ -27,8 +33,17 @@ class APIKeyManager:
             role = secrets.get("API_KEY_ROLE", "admin")
             scopes = secrets.get("API_KEY_SCOPES", "")
             scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+            rate_limit = secrets.get("API_KEY_RATE_LIMIT")
+            ip_allowlist = secrets.get("API_KEY_IP_ALLOWLIST", "")
+            allowlist = [ip.strip() for ip in ip_allowlist.split(",") if ip.strip()]
             self.api_key = api_key
-            self.add_key(api_key, role=role, scopes=scope_list)
+            self.add_key(
+                api_key,
+                role=role,
+                scopes=scope_list,
+                rate_limit_per_minute=int(rate_limit) if rate_limit else None,
+                ip_allowlist=allowlist,
+            )
             logger.debug("API keys loaded from environment")
 
     def verify_key(self, key: str) -> bool:
@@ -54,6 +69,9 @@ class APIKeyManager:
         role: str = "developer",
         scopes: Optional[List[str]] = None,
         org_id: str = "default",
+        expires_at: Optional[str] = None,
+        rate_limit_per_minute: Optional[int] = None,
+        ip_allowlist: Optional[List[str]] = None,
     ) -> None:
         """Add a new API key to the valid set."""
         if key:
@@ -62,11 +80,39 @@ class APIKeyManager:
             effective_scopes = scopes
         else:
             effective_scopes = default_scopes_for_role(role)
-        info = APIKeyInfo(key=key, role=role, scopes=effective_scopes, org_id=org_id)
+        info = APIKeyInfo(
+            key=key,
+            role=role,
+            scopes=effective_scopes,
+            org_id=org_id,
+            expires_at=expires_at,
+            rate_limit_per_minute=rate_limit_per_minute,
+            ip_allowlist=ip_allowlist or [],
+        )
         self.key_metadata[key] = info
+
+    def remove_key(self, key: str) -> None:
+        self.valid_keys.discard(key)
+        self.key_metadata.pop(key, None)
 
     def get_key_info(self, key: str) -> Optional["APIKeyInfo"]:
         return self.key_metadata.get(key)
+
+    @staticmethod
+    def _is_expired(expires_at: Optional[str]) -> bool:
+        if not expires_at:
+            return False
+        try:
+            exp = datetime.fromisoformat(expires_at)
+        except ValueError:
+            return False
+        return exp.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
+
+    def is_key_active(self, key: str) -> bool:
+        info = self.key_metadata.get(key)
+        if info is None:
+            return False
+        return not self._is_expired(info.expires_at)
 
 
 @dataclass(frozen=True)
@@ -75,6 +121,26 @@ class APIKeyInfo:
     role: str
     scopes: List[str]
     org_id: str
+    expires_at: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = None
+    ip_allowlist: List[str] = field(default_factory=list)
+
+
+class APIKeyRateLimiter:
+    def __init__(self):
+        self._window_start: Dict[str, datetime] = {}
+        self._counts: Dict[str, int] = {}
+
+    def allow(self, key: str, limit_per_minute: Optional[int]) -> bool:
+        if not limit_per_minute or limit_per_minute <= 0:
+            return True
+        now = datetime.now(timezone.utc)
+        window = self._window_start.get(key)
+        if window is None or (now - window).total_seconds() >= 60:
+            self._window_start[key] = now
+            self._counts[key] = 0
+        self._counts[key] = self._counts.get(key, 0) + 1
+        return self._counts[key] <= limit_per_minute
 
 
 SCOPE_ADMIN = "admin"
@@ -119,7 +185,40 @@ def get_api_key_manager() -> APIKeyManager:
     return _api_key_manager
 
 
-async def verify_api_key(x_api_key: Optional[str] = Header(None)) -> str:
+def _b64url_decode(segment: str) -> bytes:
+    padding = "=" * (-len(segment) % 4)
+    return base64.urlsafe_b64decode(segment + padding)
+
+
+def _verify_jwt(token: str, secret: str) -> Dict[str, Any]:
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature = _b64url_decode(signature_b64)
+    expected = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid JWT signature")
+    payload = json.loads(_b64url_decode(payload_b64))
+    exp = payload.get("exp")
+    if exp is not None:
+        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+        if exp_dt <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="JWT expired")
+    return payload
+
+
+def _jwt_enabled() -> bool:
+    return os.getenv("AGENT_SDK_JWT_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _get_jwt_secret() -> Optional[str]:
+    return os.getenv("AGENT_SDK_JWT_SECRET")
+
+
+async def verify_api_key(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> str:
     """FastAPI dependency for API key verification
     
     Args:
@@ -131,25 +230,76 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)) -> str:
     Raises:
         HTTPException: 401 if key is missing or invalid
     """
+    if _jwt_enabled() and authorization and authorization.lower().startswith("bearer "):
+        secret = _get_jwt_secret()
+        if not secret:
+            raise HTTPException(status_code=500, detail="JWT secret not configured")
+        payload = _verify_jwt(authorization.split(" ", 1)[1], secret)
+        info = APIKeyInfo(
+            key=payload.get("sub", "jwt"),
+            role=payload.get("role", ROLE_DEVELOPER),
+            scopes=payload.get("scopes") or default_scopes_for_role(payload.get("role", ROLE_DEVELOPER)),
+            org_id=payload.get("org_id", "default"),
+            rate_limit_per_minute=payload.get("rate_limit_per_minute"),
+            ip_allowlist=payload.get("ip_allowlist") or [],
+        )
+        if info.ip_allowlist:
+            client_ip = request.client.host if request.client else ""
+            if client_ip not in info.ip_allowlist:
+                raise HTTPException(status_code=403, detail="IP not allowed")
+        if not get_api_key_manager()._rate_limiter.allow(info.key, info.rate_limit_per_minute):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        return "jwt"
+
     if not x_api_key:
         logger.warning("Request without API key")
         raise HTTPException(status_code=401, detail="Missing API key in X-API-Key header")
 
     manager = get_api_key_manager()
-    if not manager.verify_key(x_api_key):
+    if not manager.verify_key(x_api_key) or not manager.is_key_active(x_api_key):
         logger.warning("Invalid API key attempted")
         raise HTTPException(status_code=401, detail="Invalid API key")
+    info = manager.get_key_info(x_api_key)
+    if info:
+        if info.ip_allowlist:
+            client_ip = request.client.host if request.client else ""
+            if client_ip not in info.ip_allowlist:
+                raise HTTPException(status_code=403, detail="IP not allowed")
+        if not manager._rate_limiter.allow(info.key, info.rate_limit_per_minute):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
     return x_api_key
 
 
-async def get_api_key_info(x_api_key: Optional[str] = Header(None)) -> APIKeyInfo:
+async def get_api_key_info(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> APIKeyInfo:
+    if _jwt_enabled() and authorization and authorization.lower().startswith("bearer "):
+        secret = _get_jwt_secret()
+        if not secret:
+            raise HTTPException(status_code=500, detail="JWT secret not configured")
+        payload = _verify_jwt(authorization.split(" ", 1)[1], secret)
+        role = payload.get("role", ROLE_DEVELOPER)
+        scopes = payload.get("scopes") or default_scopes_for_role(role)
+        if isinstance(scopes, str):
+            scopes = [s.strip() for s in scopes.split(",") if s.strip()]
+        return APIKeyInfo(
+            key=payload.get("sub", "jwt"),
+            role=role,
+            scopes=scopes,
+            org_id=payload.get("org_id", "default"),
+            expires_at=None,
+            rate_limit_per_minute=payload.get("rate_limit_per_minute"),
+            ip_allowlist=payload.get("ip_allowlist") or [],
+        )
     if not x_api_key:
         logger.warning("Request without API key")
         raise HTTPException(status_code=401, detail="Missing API key in X-API-Key header")
 
     manager = get_api_key_manager()
-    if not manager.verify_key(x_api_key):
+    if not manager.verify_key(x_api_key) or not manager.is_key_active(x_api_key):
         logger.warning("Invalid API key attempted")
         raise HTTPException(status_code=401, detail="Invalid API key")
 

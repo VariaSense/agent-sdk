@@ -215,7 +215,12 @@ class ExecutorAgent(Agent):
             if not isinstance(step.inputs, dict):
                 raise ToolError(f"Tool inputs must be a dictionary, got {type(step.inputs)}")
             
-            output = await tool.call_async(step.inputs)
+            observability = self.context.config.get("observability")
+            if observability:
+                with observability.trace_tool_call(step.tool, step.inputs):
+                    output = await tool.call_async(step.inputs)
+            else:
+                output = await tool.call_async(step.inputs)
             success = True
             
             if self.context.events:
@@ -265,12 +270,22 @@ class ExecutorAgent(Agent):
 
         try:
             start = time.time()
-            resp = await retry_with_backoff(
-                self.llm.generate_async,
-                max_retries=3,
-                messages=messages,
-                model_config=self.context.model_config,
-            )
+            observability = self.context.config.get("observability")
+            if observability:
+                with observability.trace_model_call(self.context.model_config.name, self.context.model_config.provider):
+                    resp = await retry_with_backoff(
+                        self.llm.generate_async,
+                        max_retries=3,
+                        messages=messages,
+                        model_config=self.context.model_config,
+                    )
+            else:
+                resp = await retry_with_backoff(
+                    self.llm.generate_async,
+                    max_retries=3,
+                    messages=messages,
+                    model_config=self.context.model_config,
+                )
             end = time.time()
             latency_ms = (end - start) * 1000
 
