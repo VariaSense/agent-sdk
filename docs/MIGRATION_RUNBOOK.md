@@ -1,0 +1,26 @@
+# Migration Runbook
+
+This runbook covers schema initialization and upgrades for storage backends.
+
+## Prerequisites
+- Ensure the target database is reachable.
+- Backup existing data before running migrations.
+
+## Schema Initialization
+Use the migration helper to initialize schemas:
+
+```bash
+AGENT_SDK_STORAGE_BACKEND=sqlite AGENT_SDK_DB_PATH=agent_sdk.db python scripts/migrate_storage.py
+```
+
+For Postgres:
+
+```bash
+AGENT_SDK_STORAGE_BACKEND=postgres AGENT_SDK_POSTGRES_DSN=postgresql://... python scripts/migrate_storage.py
+```
+
+## Upgrade Workflow
+1. Stop the API server.
+2. Backup database.
+3. Run migration helper to ensure new columns exist.
+4. Restart API server and monitor logs.

@@ -66,3 +66,13 @@ class StorageBackend(ABC):
     def recover_in_flight_runs(self) -> int:
         """Mark in-flight runs as recovered after a restart."""
         raise NotImplementedError
+
+    @abstractmethod
+    def delete_run(self, run_id: str) -> int:
+        """Delete a run and its events."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> int:
+        """Delete a session and all of its runs/events."""
+        raise NotImplementedError

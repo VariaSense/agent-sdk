@@ -10,6 +10,8 @@ import threading
 import sys
 from datetime import datetime, timezone
 
+from agent_sdk.observability.redaction import Redactor
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -75,10 +77,25 @@ class StdoutAuditExporter(AuditLogExporter):
 
 
 class AuditLogger:
-    def __init__(self, exporters: Optional[List[AuditLogExporter]] = None) -> None:
+    def __init__(
+        self,
+        exporters: Optional[List[AuditLogExporter]] = None,
+        redactor: Optional["Redactor"] = None,
+    ) -> None:
         self._exporters = exporters or []
+        self._redactor = redactor
 
     def emit(self, entry: AuditLogEntry) -> None:
+        if self._redactor and self._redactor.enabled and entry.metadata:
+            entry = AuditLogEntry(
+                action=entry.action,
+                actor=entry.actor,
+                org_id=entry.org_id,
+                target_type=entry.target_type,
+                target_id=entry.target_id,
+                metadata=self._redactor.redact_metadata(entry.metadata),
+                timestamp=entry.timestamp,
+            )
         for exporter in self._exporters:
             try:
                 exporter.emit(entry)
@@ -87,11 +104,13 @@ class AuditLogger:
 
 
 def create_audit_loggers(
-    path: Optional[str] = None, emit_stdout: bool = False
+    path: Optional[str] = None,
+    emit_stdout: bool = False,
+    redactor: Optional["Redactor"] = None,
 ) -> AuditLogger:
     exporters: List[AuditLogExporter] = []
     if path:
         exporters.append(JSONLAuditExporter(path=path))
     if emit_stdout:
         exporters.append(StdoutAuditExporter())
-    return AuditLogger(exporters=exporters)
+    return AuditLogger(exporters=exporters, redactor=redactor)

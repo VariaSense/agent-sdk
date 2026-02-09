@@ -13,6 +13,7 @@ from agent_sdk.observability.stream_envelope import StreamEnvelope, StreamChanne
 from agent_sdk.storage.base import StorageBackend
 from agent_sdk.observability.run_logs import RunLogExporter
 from agent_sdk.observability.event_retention import EventRetentionPolicy
+from agent_sdk.observability.redaction import Redactor
 
 
 @dataclass
@@ -30,6 +31,7 @@ class RunEventStore:
         exporters: Optional[List[RunLogExporter]] = None,
         storage: Optional[StorageBackend] = None,
         retention_policy: Optional[EventRetentionPolicy] = None,
+        redactor: Optional[Redactor] = None,
     ):
         self._runs: Dict[str, RunBuffer] = {}
         self._max_events = max_events
@@ -37,6 +39,7 @@ class RunEventStore:
         self._exporters = exporters or []
         self._storage = storage
         self._retention_policy = retention_policy or EventRetentionPolicy()
+        self._redactor = redactor
 
     def create_run(self, run_id: str) -> None:
         if run_id in self._runs:
@@ -54,31 +57,34 @@ class RunEventStore:
         if run_id not in self._runs:
             self.create_run(run_id)
         buffer = self._runs[run_id]
-        buffer.history.append(event)
+        redacted_event = event
+        if self._redactor and self._redactor.enabled:
+            redacted_event = self._redactor.redact_event(event)
+        buffer.history.append(redacted_event)
         if self._storage is not None:
             try:
-                self._storage.append_event(event)
-                cutoff = self._retention_policy.cutoff_seq(event.seq)
+                self._storage.append_event(redacted_event)
+                cutoff = self._retention_policy.cutoff_seq(redacted_event.seq)
                 if cutoff is not None:
                     self._storage.delete_events(run_id, before_seq=cutoff)
             except Exception:
                 pass
         for exporter in self._exporters:
             try:
-                exporter.emit(event)
+                exporter.emit(redacted_event)
             except Exception:
                 # Exporter failures should not break streaming.
                 pass
         if buffer.queue is None:
             return
         try:
-            buffer.queue.put_nowait(event)
+            buffer.queue.put_nowait(redacted_event)
         except asyncio.QueueFull:
             try:
                 buffer.queue.get_nowait()
             except asyncio.QueueEmpty:
                 pass
-            buffer.queue.put_nowait(event)
+            buffer.queue.put_nowait(redacted_event)
 
     def list_events(self, run_id: str) -> List[StreamEnvelope]:
         if run_id not in self._runs:

@@ -389,3 +389,20 @@ class PostgresStorage(StorageBackend):
                 count += 1
         self._conn.commit()
         return count
+
+    def delete_run(self, run_id: str) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
+            cur.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            deleted = cur.rowcount
+        self._conn.commit()
+        return deleted
+
+    def delete_session(self, session_id: str) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM runs WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
+            deleted = cur.rowcount
+        self._conn.commit()
+        return deleted

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from agent_sdk.config.loader import load_config
+from agent_sdk.config.loader import load_config, load_model_names
 from agent_sdk.core.runtime import PlannerExecutorRuntime
 from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.plugins.loader import PluginLoader
@@ -34,6 +34,10 @@ from agent_sdk.validators import (
     DeviceRegisterRequest,
     DevicePairRequest,
     ReplayEventsResponse,
+    RunEventsDeleteRequest,
+    ModelPolicyRequest,
+    QuotaUpdateRequest,
+    PromptPolicyCreateRequest,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
 from agent_sdk.observability.stream_envelope import (
@@ -48,11 +52,17 @@ from agent_sdk.observability.stream_envelope import (
 from agent_sdk.observability.run_logs import create_run_log_exporters
 from agent_sdk.observability.event_retention import EventRetentionPolicy
 from agent_sdk.observability.audit_logs import AuditLogEntry, create_audit_loggers
+from agent_sdk.observability.redaction import RedactionPolicy, Redactor
+from agent_sdk.core.streaming import TokenCounter
+from agent_sdk.core.retry import RetryConfig, retry_with_backoff
+from agent_sdk.execution.queue import ExecutionQueue
+from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
+from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
 from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
 from agent_sdk.server.device_registry import DeviceRegistry
-from agent_sdk.server.multi_tenant import MultiTenantStore
+from agent_sdk.server.multi_tenant import MultiTenantStore, QuotaLimits
 from agent_sdk.server.channels import handle_web_channel
 from agent_sdk.server.admin_ui import ADMIN_HTML
 
@@ -102,16 +112,47 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             db_path = storage_path or os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
             storage = SQLiteStorage(db_path)
         retention_policy = EventRetentionPolicy.from_env()
+        redaction_policy = RedactionPolicy.from_env()
+        redactor = Redactor(redaction_policy)
+        stream_queue_size = int(os.getenv("AGENT_SDK_STREAM_QUEUE_SIZE", "200"))
+        stream_max_events = int(os.getenv("AGENT_SDK_STREAM_MAX_EVENTS", "1000"))
         run_store = RunEventStore(
+            max_events=stream_max_events,
+            queue_size=stream_queue_size,
             exporters=create_run_log_exporters(
                 path=log_path,
                 emit_stdout=log_stdout,
             ),
             storage=storage if storage_backend == "postgres" else None,
             retention_policy=retention_policy,
+            redactor=redactor,
         )
         tenant_store = MultiTenantStore()
-        audit_logger = create_audit_loggers(path=audit_path, emit_stdout=audit_stdout)
+        try:
+            tenant_store.set_model_catalog(load_model_names(config_path))
+        except Exception:
+            pass
+        prompt_registry = PromptPolicyRegistry()
+        execution_mode = os.getenv("AGENT_SDK_EXECUTION_MODE", "direct").lower()
+        execution_queue = (
+            ExecutionQueue(worker_count=int(os.getenv("AGENT_SDK_WORKER_COUNT", "2")))
+            if execution_mode == "queue"
+            else None
+        )
+        retry_config = RetryConfig(
+            max_retries=int(os.getenv("AGENT_SDK_RETRY_MAX", "1")),
+            base_delay=float(os.getenv("AGENT_SDK_RETRY_BASE_DELAY", "0.5")),
+            max_delay=float(os.getenv("AGENT_SDK_RETRY_MAX_DELAY", "5.0")),
+            exponential_base=float(os.getenv("AGENT_SDK_RETRY_EXP_BASE", "2.0")),
+        )
+        idempotency_store = IdempotencyStore(
+            ttl_minutes=int(os.getenv("AGENT_SDK_IDEMPOTENCY_TTL_MINUTES", "60"))
+        )
+        audit_logger = create_audit_loggers(
+            path=audit_path,
+            emit_stdout=audit_stdout,
+            redactor=redactor,
+        )
         api_key_manager = get_api_key_manager()
         if api_key_manager.api_key:
             tenant_store.register_api_key(
@@ -184,6 +225,25 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             return info.key, info.org_id
         return "unknown", "default"
 
+    async def _run_with_policies(task: str, session_id: str, run_id: str):
+        async def _invoke():
+            return await runtime.run_async(task, session_id=session_id, run_id=run_id)
+
+        async def _invoke_with_retry():
+            if retry_config.max_retries <= 1:
+                return await _invoke()
+            return await retry_with_backoff(
+                _invoke,
+                max_retries=retry_config.max_retries,
+                base_delay=retry_config.base_delay,
+                max_delay=retry_config.max_delay,
+                exponential_base=retry_config.exponential_base,
+            )
+
+        if execution_queue is not None:
+            return await execution_queue.submit(_invoke_with_retry)
+        return await _invoke_with_retry()
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
@@ -248,6 +308,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.tenant_store = tenant_store
     app.state.device_registry = device_registry
     app.state.audit_logger = audit_logger
+    app.state.prompt_registry = prompt_registry
+    app.state.execution_queue = execution_queue
+    app.state.retry_config = retry_config
+    app.state.idempotency_store = idempotency_store
     gateway = GatewayServer(
         runtime=runtime,
         run_store=run_store,
@@ -303,34 +367,50 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         """
         try:
             logger.info(f"Executing task: {req.task[:100]}")
+            org_id = _org_id_from_request(request)
+            idempotency_key = request.headers.get("Idempotency-Key")
+            if idempotency_key:
+                cached = idempotency_store.get(idempotency_key)
+                if cached:
+                    return TaskResponse(**cached)
+
+            allowed, reason = tenant_store.check_quota(org_id, new_session=True, new_run=True)
+            if not allowed:
+                raise HTTPException(status_code=429, detail=f"Quota exceeded: {reason}")
+
             session_id = new_session_id()
             run_id = new_run_id()
-            org_id = _org_id_from_request(request)
 
             session = SessionMetadata(session_id=session_id, org_id=org_id)
             storage.create_session(session)
             tenant_store.record_session(org_id)
 
+            requested_model = planner.context.model_config.model_id if planner.context.model_config else None
+            resolved_model = tenant_store.resolve_model(org_id, requested_model)
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
                 agent_id="planner-executor",
                 org_id=org_id,
                 status=RunStatus.RUNNING,
+                model=resolved_model,
             )
             storage.create_run(run_meta)
             tenant_store.record_run(org_id)
 
-            msgs = await runtime.run_async(req.task, session_id=session_id, run_id=run_id)
+            msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id)
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
                 agent_id="planner-executor",
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
+                model=resolved_model,
             )
             storage.update_run(run_meta)
             
+            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
+            tenant_store.record_tokens(org_id, token_count)
             result_data = {
                 "run_id": run_id,
                 "session_id": session_id,
@@ -346,11 +426,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             }
             
             logger.info(f"Task completed successfully with {len(msgs)} messages")
-            return TaskResponse(
+            response = TaskResponse(
                 status="success",
                 result=result_data,
                 execution_time_ms=0
             )
+            if idempotency_key:
+                idempotency_store.set(idempotency_key, response.model_dump())
+            return response
         except ValidationError as e:
             logger.warning(f"Validation error: {e}")
             raise HTTPException(
@@ -360,6 +443,8 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                     "Check required fields and types in the request payload.",
                 ),
             )
+        except HTTPException:
+            raise
         except AgentSDKException as e:
             logger.error(f"Agent SDK error: {e}")
             raise HTTPException(
@@ -394,7 +479,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         Returns:
             Server-Sent Events stream with execution events
         """
-        async def emit_run_events(run_id: str, session_id: str, org_id: str) -> None:
+        async def emit_run_events(run_id: str, session_id: str, org_id: str, model_id: Optional[str]) -> None:
             seq = 0
             try:
                 start_event = StreamEnvelope(
@@ -410,7 +495,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 run_store.append_event(run_id, start_event)
                 seq += 1
 
-                msgs = await runtime.run_async(req.task, session_id=session_id, run_id=run_id)
+                msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id)
                 for msg in msgs:
                     run_store.append_event(
                         run_id,
@@ -448,8 +533,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         session_id=session_id,
                         agent_id="planner-executor",
                         status=RunStatus.COMPLETED,
+                        model=model_id,
                     )
                 )
+                token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
+                tenant_store.record_tokens(org_id, token_count)
             except Exception as e:
                 logger.error(f"Error during streaming execution: {e}", exc_info=True)
                 run_store.append_event(
@@ -471,6 +559,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         session_id=session_id,
                         agent_id="planner-executor",
                         status=RunStatus.ERROR,
+                        model=model_id,
                     )
                 )
 
@@ -489,11 +578,16 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                     status=RunStatus.ERROR.value,
                 ).to_sse()
 
+        org_id = _org_id_from_request(request)
+        allowed, reason = tenant_store.check_quota(org_id, new_session=True, new_run=True)
+        if not allowed:
+            raise HTTPException(status_code=429, detail=f"Quota exceeded: {reason}")
         run_id = new_run_id()
         session_id = new_session_id()
-        org_id = _org_id_from_request(request)
         storage.create_session(SessionMetadata(session_id=session_id, org_id=org_id))
         tenant_store.record_session(org_id)
+        requested_model = planner.context.model_config.model_id if planner.context.model_config else None
+        resolved_model = tenant_store.resolve_model(org_id, requested_model)
         storage.create_run(
             RunMetadata(
                 run_id=run_id,
@@ -501,11 +595,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 agent_id="planner-executor",
                 org_id=org_id,
                 status=RunStatus.RUNNING,
+                model=resolved_model,
             )
         )
         tenant_store.record_run(org_id)
         run_store.create_run(run_id)
-        asyncio.create_task(emit_run_events(run_id, session_id, org_id))
+        asyncio.create_task(emit_run_events(run_id, session_id, org_id, resolved_model))
 
         return StreamingResponse(
             event_generator(run_id),
@@ -727,6 +822,260 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         )
         return [asdict(summary) for summary in tenant_store.usage_summary(org_id)]
+
+    @app.get(
+        "/admin/quotas",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_quota(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.quotas.get",
+                actor=actor,
+                org_id=audit_org,
+                target_type="quota",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        if org_id:
+            quota = tenant_store.get_quota(org_id)
+            return {"org_id": org_id, **quota.__dict__}
+        return [
+            {"org_id": org.org_id, **tenant_store.get_quota(org.org_id).__dict__}
+            for org in tenant_store.list_orgs()
+        ]
+
+    @app.post(
+        "/admin/quotas",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_quota(req: QuotaUpdateRequest, request: Request):
+        tenant_store.set_quota(
+            req.org_id,
+            QuotaLimits(
+                max_runs=req.max_runs,
+                max_sessions=req.max_sessions,
+                max_tokens=req.max_tokens,
+            ),
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.quotas.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="quota",
+                metadata=req.model_dump(),
+            )
+        )
+        quota = tenant_store.get_quota(req.org_id)
+        return {"org_id": req.org_id, **quota.__dict__}
+
+    @app.get(
+        "/admin/model-policies",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_model_policy(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.model_policies.get",
+                actor=actor,
+                org_id=audit_org,
+                target_type="model_policy",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        if org_id:
+            policy = tenant_store.get_model_policy(org_id)
+            return {"org_id": org_id, "policy": policy.__dict__ if policy else None}
+        return [
+            {"org_id": org.org_id, "policy": tenant_store.get_model_policy(org.org_id).__dict__ if tenant_store.get_model_policy(org.org_id) else None}
+            for org in tenant_store.list_orgs()
+        ]
+
+    @app.post(
+        "/admin/model-policies",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_model_policy(req: ModelPolicyRequest, request: Request):
+        policy = tenant_store.set_model_policy(
+            req.org_id,
+            allowed_models=req.allowed_models,
+            fallback_models=req.fallback_models or None,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.model_policies.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="model_policy",
+                metadata=req.model_dump(),
+            )
+        )
+        return {"org_id": req.org_id, "policy": policy.__dict__}
+
+    @app.get(
+        "/admin/policies",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_policies(request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policies.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy",
+            )
+        )
+        return {"policies": prompt_registry.list_policies()}
+
+    @app.post(
+        "/admin/policies",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_policy(req: PromptPolicyCreateRequest, request: Request):
+        version = prompt_registry.create_version(
+            policy_id=req.policy_id,
+            content=req.content,
+            description=req.description,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policies.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy",
+                target_id=req.policy_id,
+                metadata={"version": version.version},
+            )
+        )
+        return version.__dict__
+
+    @app.get(
+        "/admin/policies/{policy_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_policy_versions(policy_id: str, request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policies.versions",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy",
+                target_id=policy_id,
+            )
+        )
+        versions = [version.__dict__ for version in prompt_registry.list_versions(policy_id)]
+        return {"policy_id": policy_id, "versions": versions}
+
+    @app.get(
+        "/admin/policies/{policy_id}/latest",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_latest_policy(policy_id: str, request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policies.latest",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy",
+                target_id=policy_id,
+            )
+        )
+        latest = prompt_registry.latest(policy_id)
+        if not latest:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        return latest.__dict__
+
+    @app.post(
+        "/admin/runs/{run_id}/events/purge",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def purge_run_events(run_id: str, request: Request, body: RunEventsDeleteRequest):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if run.org_id != _org_id_from_request(request):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        deleted = storage.delete_events(run_id, before_seq=body.before_seq)
+        actor, org_id = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="run.events.purged",
+                actor=actor,
+                org_id=org_id,
+                target_type="run",
+                target_id=run_id,
+                metadata={"before_seq": body.before_seq, "deleted": deleted},
+            )
+        )
+        return {"run_id": run_id, "deleted": deleted}
+
+    @app.delete(
+        "/admin/runs/{run_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def delete_run(run_id: str, request: Request):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if run.org_id != _org_id_from_request(request):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        deleted = storage.delete_run(run_id)
+        actor, org_id = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="run.deleted",
+                actor=actor,
+                org_id=org_id,
+                target_type="run",
+                target_id=run_id,
+                metadata={"deleted": deleted},
+            )
+        )
+        return {"run_id": run_id, "deleted": bool(deleted)}
+
+    @app.delete(
+        "/admin/sessions/{session_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def delete_session(session_id: str, request: Request):
+        session = storage.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.org_id != _org_id_from_request(request):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        deleted = storage.delete_session(session_id)
+        actor, org_id = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="session.deleted",
+                actor=actor,
+                org_id=org_id,
+                target_type="session",
+                target_id=session_id,
+                metadata={"deleted": deleted},
+            )
+        )
+        return {"session_id": session_id, "deleted": bool(deleted)}
 
     # List Tools Endpoint
     @app.get("/tools", tags=["Tools"], dependencies=[Depends(require_scopes([SCOPE_TOOLS_READ]))])

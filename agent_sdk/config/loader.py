@@ -99,3 +99,14 @@ def load_config(path: str, llm_client: LLMClient):
 
     logger.info("Agents initialized: planner and executor")
     return planner, executor
+
+
+def load_model_names(path: str) -> list[str]:
+    """Load model names from a config file without initializing agents."""
+    path = os.path.expanduser(os.path.expandvars(path))
+    with open(path, "r", encoding="utf-8") as f:
+        raw_cfg = yaml.safe_load(f)
+        if raw_cfg is None:
+            return []
+    validated_cfg = ConfigSchema(**raw_cfg)
+    return list(validated_cfg.models.keys())

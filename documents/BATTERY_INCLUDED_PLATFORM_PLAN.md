@@ -7,7 +7,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
-- Phase 4: Production hardening in progress (tasks 1-8 complete).
+- Phase 4: Production hardening complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -434,37 +434,37 @@ Estimate: 3-5 days.
 8. Audit logs for admin actions and API key changes. **(Completed)**  
 Estimate: 3-5 days.
 
-9. Data retention + deletion APIs.  
+9. Data retention + deletion APIs. **(Completed)**  
 Estimate: 1 week.
 
-10. PII redaction pipeline for logs/events.  
+10. PII redaction pipeline for logs/events. **(Completed)**  
 Estimate: 3-5 days.
 
-11. Per-tenant model registry + fallback policies.  
+11. Per-tenant model registry + fallback policies. **(Completed)**  
 Estimate: 1-2 weeks.
 
-12. Quota enforcement for tokens/runs/sessions.  
+12. Quota enforcement for tokens/runs/sessions. **(Completed)**  
 Estimate: 1 week.
 
-13. Prompt/policy versioning for safety controls.  
+13. Prompt/policy versioning for safety controls. **(Completed)**  
 Estimate: 3-5 days.
 
-14. Queue-based execution option + worker pool.  
+14. Queue-based execution option + worker pool. **(Completed)**  
 Estimate: 1-2 weeks.
 
-15. Backpressure propagation + retry policy config.  
+15. Backpressure propagation + retry policy config. **(Completed)**  
 Estimate: 1 week.
 
-16. Idempotency keys for run creation.  
+16. Idempotency keys for run creation. **(Completed)**  
 Estimate: 3-5 days.
 
-17. Production deployment guide (TLS, proxies, backups, migrations).  
+17. Production deployment guide (TLS, proxies, backups, migrations). **(Completed)**  
 Estimate: 1 week.
 
-18. Migration tooling and runbook.  
+18. Migration tooling and runbook. **(Completed)**  
 Estimate: 3-5 days.
 
-19. Platform builder guide + reference multi-tenant demo app.  
+19. Platform builder guide + reference multi-tenant demo app. **(Completed)**  
 Estimate: 1-2 weeks.
 
 ---

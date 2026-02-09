@@ -196,3 +196,34 @@ class ReplayEventsResponse(BaseModel):
 
     events: List[Dict[str, Any]]
     count: int
+
+
+class RunEventsDeleteRequest(BaseModel):
+    """Request to delete run events."""
+
+    before_seq: Optional[int] = Field(default=None, ge=0)
+
+
+class ModelPolicyRequest(BaseModel):
+    """Request to set tenant model policy."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    allowed_models: List[str] = Field(default_factory=list)
+    fallback_models: List[str] = Field(default_factory=list)
+
+
+class QuotaUpdateRequest(BaseModel):
+    """Request to update quota limits."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    max_runs: Optional[int] = Field(default=None, ge=0)
+    max_sessions: Optional[int] = Field(default=None, ge=0)
+    max_tokens: Optional[int] = Field(default=None, ge=0)
+
+
+class PromptPolicyCreateRequest(BaseModel):
+    """Request to create a prompt/policy version."""
+
+    policy_id: str = Field(..., min_length=1, max_length=100)
+    content: str = Field(..., min_length=1, max_length=20000)
+    description: Optional[str] = Field(default=None, max_length=200)
