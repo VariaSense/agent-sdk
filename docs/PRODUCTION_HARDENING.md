@@ -9,12 +9,14 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - API key rotation via `/admin/api-keys/{key_id}/rotate`.
 - Per-key rate limit and IP allowlist via admin API key creation.
 - Tool allowlists: `AGENT_SDK_FS_ALLOWLIST`, `AGENT_SDK_HTTP_ALLOWLIST`.
+- Secrets providers: env/file + Vault + AWS/GCP/Azure secret managers (see `agent_sdk/secrets.py`).
 
 ## Durability and Replay
 - Postgres storage for runs/sessions/events (`AGENT_SDK_STORAGE_BACKEND=postgres`).
 - Event replay via `/run/{id}/events/replay`.
 - Retention via `AGENT_SDK_EVENT_RETENTION_MAX_EVENTS`.
 - Run recovery on restart via `AGENT_SDK_RUN_RECOVERY_ENABLED=true`.
+- Per-tenant retention via `/admin/retention`.
 
 ## Governance and Compliance
 - Audit logging: `AGENT_SDK_AUDIT_LOG_PATH`, `AGENT_SDK_AUDIT_LOG_STDOUT`.
@@ -28,9 +30,18 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Reliability
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
 - Durable queue backend: `AGENT_SDK_QUEUE_BACKEND=sqlite`, `AGENT_SDK_QUEUE_DB_PATH=queue.db`.
+- Redis queue backend: `AGENT_SDK_QUEUE_BACKEND=redis`, `AGENT_SDK_REDIS_URL=redis://host:6379/0`.
 - Retry policy: `AGENT_SDK_RETRY_MAX`, `AGENT_SDK_RETRY_BASE_DELAY`, `AGENT_SDK_RETRY_MAX_DELAY`.
 - Backpressure: `AGENT_SDK_STREAM_QUEUE_SIZE`, `AGENT_SDK_STREAM_MAX_EVENTS`.
 - Idempotency for run creation: `Idempotency-Key` header.
+- Scheduled runs via `/admin/schedules` with cron expressions.
+
+## Metrics and Monitoring
+- Prometheus endpoint: set `AGENT_SDK_PROMETHEUS_ENABLED=true`, scrape `/metrics`.
+
+## Tracing Export (OpenTelemetry)
+- Enable exporter preset: `AGENT_SDK_OTEL_EXPORTER=otlp` or `AGENT_SDK_OTEL_EXPORTER=stdout`.
+- OTLP endpoint (HTTP): `AGENT_SDK_OTEL_OTLP_ENDPOINT=http://collector:4318/v1/traces`.
 
 ## Tool Packs
 - Signed manifests: `AGENT_SDK_TOOL_MANIFEST_SECRET`.
@@ -40,3 +51,12 @@ This guide documents the production-grade features added in Phase 4 and how to e
 2. Set audit logs and redaction policies.
 3. Define quotas and model policies per org.
 4. Run migrations before deploying new versions.
+
+## Kubernetes Deployment
+- Manifests live in `deploy/k8s/` (Deployment, Service, HPA).
+- Probes: `/health` for liveness and `/ready` for readiness.
+- HPA uses CPU utilization (requires metrics-server).
+
+## API Versioning
+- Prefer versioned paths: `/v1/...`.
+- Unversioned API requests include `X-API-Deprecated` warning header.

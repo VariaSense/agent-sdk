@@ -10,6 +10,11 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 import sqlite3
 import uuid
 
+try:
+    import redis  # type: ignore
+except Exception:  # pragma: no cover - optional
+    redis = None
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -140,6 +145,66 @@ class SQLiteQueueBackend(QueueBackend):
                 """,
                 (job.attempts, error, _now_iso(), job.job_id),
             )
+
+
+class RedisQueueBackend(QueueBackend):
+    def __init__(self, url: str, queue_key: str = "agent_sdk:queue", dlq_key: str = "agent_sdk:dlq", client=None):
+        if redis is None and client is None:
+            raise RuntimeError("redis is required for RedisQueueBackend")
+        self._queue_key = queue_key
+        self._dlq_key = dlq_key
+        self._client = client or redis.Redis.from_url(url)
+
+    def _job_key(self, job_id: str) -> str:
+        return f"agent_sdk:job:{job_id}"
+
+    def enqueue(self, payload: Dict[str, Any], max_attempts: int) -> str:
+        job_id = f"job_{uuid.uuid4().hex}"
+        job_key = self._job_key(job_id)
+        self._client.hset(
+            job_key,
+            mapping={
+                "payload_json": json.dumps(payload),
+                "attempts": 0,
+                "max_attempts": max_attempts,
+            },
+        )
+        self._client.lpush(self._queue_key, job_id)
+        return job_id
+
+    def claim_next(self) -> Optional[QueueJob]:
+        job_id = self._client.rpop(self._queue_key)
+        if job_id is None:
+            return None
+        if isinstance(job_id, bytes):
+            job_id = job_id.decode("utf-8")
+        job_key = self._job_key(job_id)
+        payload_json = self._client.hget(job_key, "payload_json") or b"{}"
+        attempts = int(self._client.hget(job_key, "attempts") or 0)
+        max_attempts = int(self._client.hget(job_key, "max_attempts") or 0)
+        return QueueJob(
+            job_id=job_id,
+            payload=json.loads(payload_json),
+            attempts=attempts,
+            max_attempts=max_attempts,
+        )
+
+    def mark_done(self, job_id: str) -> None:
+        self._client.delete(self._job_key(job_id))
+
+    def mark_failed(self, job: QueueJob, error: str) -> None:
+        self._client.hset(
+            self._job_key(job.job_id),
+            mapping={"error": error, "attempts": job.attempts},
+        )
+        self._client.lpush(self._dlq_key, job.job_id)
+
+    def requeue(self, job: QueueJob, error: str) -> None:
+        self._client.hset(
+            self._job_key(job.job_id),
+            mapping={"attempts": job.attempts, "last_error": error},
+        )
+        self._client.lpush(self._queue_key, job.job_id)
 
 
 class DurableExecutionQueue:

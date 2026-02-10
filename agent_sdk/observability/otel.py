@@ -20,6 +20,29 @@ import time
 import json
 import logging
 from contextlib import contextmanager
+import os
+
+try:
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.trace import Status, StatusCode
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import (
+        BatchSpanProcessor,
+        ConsoleSpanExporter,
+        SimpleSpanProcessor,
+    )
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+except ImportError:  # pragma: no cover - optional dependency
+    otel_trace = None
+    TracerProvider = None
+    BatchSpanProcessor = None
+    ConsoleSpanExporter = None
+    SimpleSpanProcessor = None
+    OTLPSpanExporter = None
+    Resource = None
+    Status = None
+    StatusCode = None
 
 
 logger = logging.getLogger(__name__)
@@ -202,6 +225,30 @@ class TracingProvider:
         self.spans: Dict[str, Span] = {}
         self.current_trace_id: Optional[str] = None
         self.current_span_id: Optional[str] = None
+        self._otel_tracer = None
+        self._otel_span_by_id: Dict[str, Any] = {}
+        self._configure_otel_exporter()
+
+    def _configure_otel_exporter(self) -> None:
+        exporter = os.getenv("AGENT_SDK_OTEL_EXPORTER", "").lower()
+        if not exporter or exporter == "none":
+            return
+        if otel_trace is None or TracerProvider is None:
+            logger.warning("OpenTelemetry SDK not installed; exporter preset ignored.")
+            return
+        endpoint = os.getenv("AGENT_SDK_OTEL_OTLP_ENDPOINT", "http://localhost:4318/v1/traces")
+        resource = Resource.create({"service.name": self.service_name})
+        provider = TracerProvider(resource=resource)
+        if exporter == "otlp":
+            processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+        elif exporter == "stdout":
+            processor = SimpleSpanProcessor(ConsoleSpanExporter())
+        else:
+            logger.warning("Unsupported AGENT_SDK_OTEL_EXPORTER value: %s", exporter)
+            return
+        provider.add_span_processor(processor)
+        otel_trace.set_tracer_provider(provider)
+        self._otel_tracer = otel_trace.get_tracer(self.service_name)
 
     def start_span(
         self,
@@ -238,6 +285,28 @@ class TracingProvider:
         self.spans[span_id] = span
         self.current_span_id = span_id
         self.current_trace_id = trace_id
+        if self._otel_tracer:
+            otel_kind = otel_trace.SpanKind.INTERNAL
+            if kind == SpanKind.SERVER:
+                otel_kind = otel_trace.SpanKind.SERVER
+            elif kind == SpanKind.CLIENT:
+                otel_kind = otel_trace.SpanKind.CLIENT
+            elif kind == SpanKind.PRODUCER:
+                otel_kind = otel_trace.SpanKind.PRODUCER
+            elif kind == SpanKind.CONSUMER:
+                otel_kind = otel_trace.SpanKind.CONSUMER
+            parent_otel_span = None
+            if parent_span_id:
+                parent_otel_span = self._otel_span_by_id.get(parent_span_id)
+            ctx = (
+                otel_trace.set_span_in_context(parent_otel_span)
+                if parent_otel_span
+                else None
+            )
+            otel_span = self._otel_tracer.start_span(name, context=ctx, kind=otel_kind)
+            for attr_key, attr_value in (attributes or {}).items():
+                otel_span.set_attribute(attr_key, attr_value)
+            self._otel_span_by_id[span_id] = otel_span
 
         logger.debug(f"Started span: {name} ({span_id})")
         return span
@@ -252,6 +321,11 @@ class TracingProvider:
         """
         span.status = status
         span.end()
+        otel_span = self._otel_span_by_id.pop(span.span_id, None)
+        if otel_span:
+            if status == SpanStatus.ERROR and Status is not None and StatusCode is not None:
+                otel_span.set_status(Status(StatusCode.ERROR, span.error_message or "error"))
+            otel_span.end()
         logger.debug(f"Ended span: {span.name} ({span.span_id})")
 
     def get_trace(self, trace_id: str) -> List[Span]:

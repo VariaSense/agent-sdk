@@ -28,3 +28,5 @@ See `examples/multi_tenant_demo` for a reference setup.
 ## Client SDKs
 - Python: `clients/python/agent_sdk_client.py`
 - JS: `clients/js/index.js`
+- Use `checkCompatibility()` to validate client/server major version alignment.
+- Version policy: `docs/VERSIONING_POLICY.md`.

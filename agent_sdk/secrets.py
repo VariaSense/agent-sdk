@@ -71,6 +71,83 @@ class VaultSecretsProvider(SecretsProvider):
         return str(value) if value is not None else None
 
 
+@dataclass
+class AWSSecretsManagerProvider(SecretsProvider):
+    region: Optional[str] = None
+    secret_id: Optional[str] = None
+    _cache: Dict[str, str] = None
+
+    def _client(self):
+        try:
+            import boto3  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional
+            raise RuntimeError("boto3 is required for AWS Secrets Manager") from exc
+        return boto3.client("secretsmanager", region_name=self.region)
+
+    def _load_secret_map(self) -> Dict[str, str]:
+        if self._cache is None:
+            self._cache = {}
+        if self.secret_id is None:
+            return self._cache
+        if self._cache:
+            return self._cache
+        client = self._client()
+        response = client.get_secret_value(SecretId=self.secret_id)
+        secret_string = response.get("SecretString") or "{}"
+        try:
+            data = json.loads(secret_string)
+        except json.JSONDecodeError:
+            data = {self.secret_id: secret_string}
+        self._cache.update({str(k): str(v) for k, v in data.items()})
+        return self._cache
+
+    def get(self, key: str) -> Optional[str]:
+        if self.secret_id:
+            return self._load_secret_map().get(key)
+        client = self._client()
+        response = client.get_secret_value(SecretId=key)
+        value = response.get("SecretString")
+        return str(value) if value is not None else None
+
+
+@dataclass
+class GCPSecretManagerProvider(SecretsProvider):
+    project_id: str
+
+    def _client(self):
+        try:
+            from google.cloud import secretmanager  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional
+            raise RuntimeError("google-cloud-secret-manager is required for GCP secrets") from exc
+        return secretmanager.SecretManagerServiceClient()
+
+    def get(self, key: str) -> Optional[str]:
+        client = self._client()
+        name = f"projects/{self.project_id}/secrets/{key}/versions/latest"
+        response = client.access_secret_version(request={"name": name})
+        payload = response.payload.data.decode("utf-8")
+        return payload
+
+
+@dataclass
+class AzureKeyVaultProvider(SecretsProvider):
+    vault_url: str
+
+    def _client(self):
+        try:
+            from azure.identity import DefaultAzureCredential  # type: ignore
+            from azure.keyvault.secrets import SecretClient  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional
+            raise RuntimeError("azure-identity and azure-keyvault-secrets are required") from exc
+        credential = DefaultAzureCredential()
+        return SecretClient(vault_url=self.vault_url, credential=credential)
+
+    def get(self, key: str) -> Optional[str]:
+        client = self._client()
+        secret = client.get_secret(key)
+        return secret.value
+
+
 class SecretsManager:
     def __init__(self, providers: List[SecretsProvider]):
         self.providers = providers
@@ -92,4 +169,19 @@ def default_secrets_manager() -> SecretsManager:
     vault_token = os.getenv("AGENT_SDK_VAULT_TOKEN")
     if vault_addr and vault_token:
         providers.append(VaultSecretsProvider(address=vault_addr, token=vault_token))
+    aws_enabled = os.getenv("AGENT_SDK_AWS_SECRETS_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+    aws_secret_id = os.getenv("AGENT_SDK_AWS_SECRET_ID")
+    if aws_enabled or aws_secret_id:
+        providers.append(
+            AWSSecretsManagerProvider(
+                region=os.getenv("AGENT_SDK_AWS_REGION"),
+                secret_id=aws_secret_id,
+            )
+        )
+    gcp_project_id = os.getenv("AGENT_SDK_GCP_PROJECT_ID")
+    if gcp_project_id:
+        providers.append(GCPSecretManagerProvider(project_id=gcp_project_id))
+    azure_vault_url = os.getenv("AGENT_SDK_AZURE_KEYVAULT_URL")
+    if azure_vault_url:
+        providers.append(AzureKeyVaultProvider(vault_url=azure_vault_url))
     return SecretsManager(providers)

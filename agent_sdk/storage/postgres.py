@@ -12,6 +12,7 @@ from agent_sdk.observability.stream_envelope import (
     StreamEnvelope,
     RunStatus,
     StreamChannel,
+    is_valid_run_transition,
 )
 from agent_sdk.storage.base import StorageBackend
 
@@ -189,6 +190,14 @@ class PostgresStorage(StorageBackend):
 
     def update_run(self, run: RunMetadata) -> None:
         with self._conn.cursor() as cur:
+            cur.execute("SELECT status FROM runs WHERE run_id = %s", (run.run_id,))
+            row = cur.fetchone()
+            if row:
+                current_status = RunStatus(row[0])
+                if not is_valid_run_transition(current_status, run.status):
+                    raise ValueError(
+                        f"Invalid run status transition: {current_status.value} -> {run.status.value}"
+                    )
             cur.execute(
                 """
                 UPDATE runs SET

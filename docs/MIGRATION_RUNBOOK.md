@@ -32,6 +32,19 @@ For Postgres:
 AGENT_SDK_CONTROL_PLANE_BACKEND=postgres AGENT_SDK_CONTROL_PLANE_DSN=postgresql://... python scripts/migrate_storage.py
 ```
 
+## Alembic Migrations
+Use Alembic for versioned upgrades and schema compatibility checks.
+
+```bash
+AGENT_SDK_ALEMBIC_DSN=postgresql://... python scripts/migrate_alembic.py
+```
+
+For SQLite:
+
+```bash
+AGENT_SDK_ALEMBIC_DSN=sqlite:///agent_sdk.db python scripts/migrate_alembic.py
+```
+
 ## Upgrade Workflow
 1. Stop the API server.
 2. Backup database.

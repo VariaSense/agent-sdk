@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-sdk
+  labels:
+    app: agent-sdk
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-sdk
+  template:
+    metadata:
+      labels:
+        app: agent-sdk
+    spec:
+      containers:
+        - name: agent-sdk
+          image: agent-sdk:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+              name: http
+          env:
+            - name: AGENT_SDK_TRACING_ENABLED
+              value: "true"
+            - name: AGENT_SDK_PROMETHEUS_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"

@@ -224,6 +224,22 @@ class QuotaUpdateRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=None, ge=0)
 
 
+class RetentionPolicyRequest(BaseModel):
+    """Request to update retention policy."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    max_events: Optional[int] = Field(default=None, ge=1)
+
+
+class ScheduleCreateRequest(BaseModel):
+    """Request to create a scheduled run."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    task: str = Field(..., min_length=1, max_length=10000)
+    cron: str = Field(..., min_length=1, max_length=100)
+    enabled: bool = Field(default=True)
+
+
 class PromptPolicyCreateRequest(BaseModel):
     """Request to create a prompt/policy version."""
 

@@ -8,3 +8,4 @@ def test_js_client_exists():
     assert path.exists()
     content = path.read_text(encoding="utf-8")
     assert "AgentSDKClient" in content
+    assert "checkCompatibility" in content

@@ -16,6 +16,7 @@ from agent_sdk.observability.stream_envelope import (
     StreamEnvelope,
     RunStatus,
     StreamChannel,
+    is_valid_run_transition,
 )
 from agent_sdk.storage.base import StorageBackend
 
@@ -199,6 +200,16 @@ class SQLiteStorage(StorageBackend):
 
     def update_run(self, run: RunMetadata) -> None:
         with self._connect() as conn:
+            current = conn.execute(
+                "SELECT status FROM runs WHERE run_id = ?",
+                (run.run_id,),
+            ).fetchone()
+            if current:
+                current_status = RunStatus(current["status"])
+                if not is_valid_run_transition(current_status, run.status):
+                    raise ValueError(
+                        f"Invalid run status transition: {current_status.value} -> {run.status.value}"
+                    )
             conn.execute(
                 """
                 UPDATE runs SET

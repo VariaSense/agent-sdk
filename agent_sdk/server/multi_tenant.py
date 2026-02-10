@@ -67,6 +67,11 @@ class QuotaLimits:
 
 
 @dataclass(frozen=True)
+class RetentionPolicyConfig:
+    max_events: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class ModelPolicy:
     allowed_models: List[str] = field(default_factory=list)
     fallback_models: List[str] = field(default_factory=list)
@@ -82,6 +87,7 @@ class MultiTenantStore:
         self._keys: Dict[str, APIKeyRecord] = {}
         self._usage: Dict[str, UsageSummary] = {}
         self._quotas: Dict[str, QuotaLimits] = {}
+        self._retention: Dict[str, RetentionPolicyConfig] = {}
         self._model_policies: Dict[str, ModelPolicy] = {}
         self._model_catalog: List[str] = []
         self.ensure_org("default", "Default Org")
@@ -96,6 +102,8 @@ class MultiTenantStore:
         self._usage.setdefault(org_id, UsageSummary(org_id=org_id))
         if org_id not in self._quotas:
             self._quotas[org_id] = QuotaLimits()
+        if org_id not in self._retention:
+            self._retention[org_id] = RetentionPolicyConfig()
         return org
 
     def list_orgs(self) -> List[Organization]:
@@ -244,6 +252,21 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.get_quota(org_id)
         return self._quotas.get(org_id, QuotaLimits())
+
+    def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            self._backend.set_retention_policy(org_id, policy)
+            return
+        self._retention[org_id] = policy
+
+    def get_retention_policy(self, org_id: str) -> RetentionPolicyConfig:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            policy = self._backend.get_retention_policy(org_id)
+            if policy is not None:
+                return policy
+        return self._retention.get(org_id, RetentionPolicyConfig())
 
     def check_quota(self, org_id: str, new_run: bool = False, new_session: bool = False, tokens: int = 0) -> Tuple[bool, Optional[str]]:
         summary = self._usage.get(org_id, UsageSummary(org_id=org_id))

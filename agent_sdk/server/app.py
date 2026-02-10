@@ -5,7 +5,7 @@ from dataclasses import asdict
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from agent_sdk.config.loader import load_config, load_model_names
@@ -37,6 +37,8 @@ from agent_sdk.validators import (
     RunEventsDeleteRequest,
     ModelPolicyRequest,
     QuotaUpdateRequest,
+    RetentionPolicyRequest,
+    ScheduleCreateRequest,
     PromptPolicyCreateRequest,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
@@ -54,20 +56,23 @@ from agent_sdk.observability.event_retention import EventRetentionPolicy
 from agent_sdk.observability.audit_logs import AuditLogEntry, create_audit_loggers
 from agent_sdk.observability.redaction import RedactionPolicy, Redactor
 from agent_sdk.observability.otel import ObservabilityManager
+from agent_sdk.observability.prometheus import ObservabilityPrometheusCollector
+from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_latest
 from agent_sdk.core.streaming import TokenCounter
 from agent_sdk.core.retry import RetryConfig, retry_with_backoff
 from agent_sdk.execution.queue import ExecutionQueue
-from agent_sdk.execution.durable_queue import DurableExecutionQueue, SQLiteQueueBackend
+from agent_sdk.execution.durable_queue import DurableExecutionQueue, SQLiteQueueBackend, RedisQueueBackend
 from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
 from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
 from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
 from agent_sdk.server.device_registry import DeviceRegistry
-from agent_sdk.server.multi_tenant import MultiTenantStore, QuotaLimits
+from agent_sdk.server.multi_tenant import MultiTenantStore, QuotaLimits, RetentionPolicyConfig
 from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlPlane
 from agent_sdk.server.channels import handle_web_channel
 from agent_sdk.server.admin_ui import ADMIN_HTML
+from agent_sdk.server.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,16 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         if observability:
             planner.context.config["observability"] = observability
             executor.context.config["observability"] = observability
+        prometheus_enabled = os.getenv("AGENT_SDK_PROMETHEUS_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        prometheus_registry = None
+        if prometheus_enabled:
+            prometheus_registry = CollectorRegistry()
+            prometheus_registry.register(ObservabilityPrometheusCollector(observability))
         log_path = os.getenv("AGENT_SDK_RUN_LOG_PATH")
         log_stdout = os.getenv("AGENT_SDK_RUN_LOG_STDOUT", "").lower() in {
             "1",
@@ -129,17 +144,6 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         redactor = Redactor(redaction_policy)
         stream_queue_size = int(os.getenv("AGENT_SDK_STREAM_QUEUE_SIZE", "200"))
         stream_max_events = int(os.getenv("AGENT_SDK_STREAM_MAX_EVENTS", "1000"))
-        run_store = RunEventStore(
-            max_events=stream_max_events,
-            queue_size=stream_queue_size,
-            exporters=create_run_log_exporters(
-                path=log_path,
-                emit_stdout=log_stdout,
-            ),
-            storage=storage if storage_backend == "postgres" else None,
-            retention_policy=retention_policy,
-            redactor=redactor,
-        )
         control_plane_backend = os.getenv("AGENT_SDK_CONTROL_PLANE_BACKEND", "memory").lower()
         control_plane = None
         if control_plane_backend == "postgres":
@@ -155,6 +159,18 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             tenant_store.set_model_catalog(load_model_names(config_path))
         except Exception:
             pass
+        run_store = RunEventStore(
+            max_events=stream_max_events,
+            queue_size=stream_queue_size,
+            exporters=create_run_log_exporters(
+                path=log_path,
+                emit_stdout=log_stdout,
+            ),
+            storage=storage if storage_backend == "postgres" else None,
+            retention_policy=retention_policy,
+            redactor=redactor,
+            tenant_store=tenant_store,
+        )
         prompt_registry = PromptPolicyRegistry()
         execution_mode = os.getenv("AGENT_SDK_EXECUTION_MODE", "direct").lower()
         queue_backend = os.getenv("AGENT_SDK_QUEUE_BACKEND", "memory").lower()
@@ -165,6 +181,18 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 queue_path = os.getenv("AGENT_SDK_QUEUE_DB_PATH", "queue.db")
                 durable_queue = DurableExecutionQueue(
                     backend=SQLiteQueueBackend(queue_path),
+                    handler=lambda payload: runtime.run_async(
+                        payload["task"],
+                        session_id=payload["session_id"],
+                        run_id=payload["run_id"],
+                    ),
+                    poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
+                    max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
+                )
+            elif queue_backend == "redis":
+                redis_url = os.getenv("AGENT_SDK_REDIS_URL", "redis://localhost:6379/0")
+                durable_queue = DurableExecutionQueue(
+                    backend=RedisQueueBackend(redis_url),
                     handler=lambda payload: runtime.run_async(
                         payload["task"],
                         session_id=payload["session_id"],
@@ -242,6 +270,9 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         version="0.1.0",
         description="Agent SDK - Modular Agent Framework with Planning, Execution, and Observability"
     )
+    app.state.observability = observability
+    app.state.prometheus_enabled = prometheus_enabled
+    app.state.prometheus_registry = prometheus_registry
 
     ui_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ui"))
     ui_source = os.path.join(ui_root, "index.html")
@@ -285,6 +316,63 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             return await execution_queue.submit(_invoke_with_retry)
         return await _invoke_with_retry()
 
+    async def _submit_scheduled(entry):
+        org_id = entry.org_id
+        allowed, reason = tenant_store.check_quota(org_id, new_session=True, new_run=True)
+        if not allowed:
+            logger.warning("Scheduled run blocked for org %s: %s", org_id, reason)
+            return
+        session_id = new_session_id()
+        run_id = new_run_id()
+        session = SessionMetadata(session_id=session_id, org_id=org_id)
+        storage.create_session(session)
+        tenant_store.record_session(org_id)
+        requested_model = planner.context.model_config.model_id if planner.context.model_config else None
+        resolved_model = tenant_store.resolve_model(org_id, requested_model)
+        run_meta = RunMetadata(
+            run_id=run_id,
+            session_id=session_id,
+            agent_id="planner-executor",
+            org_id=org_id,
+            status=RunStatus.RUNNING,
+            model=resolved_model,
+            metadata={"scheduled": True, "schedule_id": entry.schedule_id},
+        )
+        storage.create_run(run_meta)
+        tenant_store.record_run(org_id)
+        try:
+            msgs = await _run_with_policies(entry.task, session_id=session_id, run_id=run_id)
+            run_meta = RunMetadata(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="planner-executor",
+                org_id=org_id,
+                status=RunStatus.COMPLETED,
+                model=resolved_model,
+                metadata={"scheduled": True, "schedule_id": entry.schedule_id},
+            )
+            storage.update_run(run_meta)
+            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
+            tenant_store.record_tokens(org_id, token_count)
+        except Exception as exc:
+            logger.error("Scheduled run failed: %s", exc, exc_info=True)
+            run_meta = RunMetadata(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="planner-executor",
+                org_id=org_id,
+                status=RunStatus.ERROR,
+                model=resolved_model,
+                metadata={"scheduled": True, "schedule_id": entry.schedule_id, "error": str(exc)},
+            )
+            storage.update_run(run_meta)
+
+    scheduler = Scheduler(
+        _submit_scheduled,
+        poll_interval=float(os.getenv("AGENT_SDK_SCHEDULER_POLL_INTERVAL", "1.0")),
+    )
+    app.state.scheduler = scheduler
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
@@ -296,7 +384,23 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
     # Basic API key auth middleware for protected routes
     protected_prefixes = ("/run", "/sessions", "/tools")
-    public_paths = ("/health", "/ready", "/docs", "/openapi.json", "/redoc")
+    public_paths = ("/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc")
+
+    @app.middleware("http")
+    async def api_versioning_middleware(request: Request, call_next):
+        original_path = request.scope.get("path", "")
+        versioned = False
+        if original_path == "/v1":
+            request.scope["path"] = "/"
+            versioned = True
+        elif original_path.startswith("/v1/"):
+            request.scope["path"] = original_path[3:]
+            versioned = True
+        response = await call_next(request)
+        response.headers["X-API-Version"] = "v1"
+        if not versioned and not original_path.startswith(public_paths):
+            response.headers["X-API-Deprecated"] = "Use /v1 prefix for API requests"
+        return response
 
     @app.middleware("http")
     async def api_key_middleware(request: Request, call_next):
@@ -359,11 +463,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     async def _start_workers():
         if durable_queue is not None:
             await durable_queue.start()
+        await scheduler.start()
 
     @app.on_event("shutdown")
     async def _stop_workers():
         if durable_queue is not None:
             await durable_queue.stop()
+        await scheduler.stop()
     gateway = GatewayServer(
         runtime=runtime,
         run_store=run_store,
@@ -400,6 +506,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                     "Verify config.yaml and plugin initialization.",
                 ),
             )
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint():
+        """Prometheus metrics endpoint."""
+        if not app.state.prometheus_enabled or app.state.prometheus_registry is None:
+            raise HTTPException(status_code=404, detail="Prometheus metrics disabled")
+        payload = generate_latest(app.state.prometheus_registry)
+        return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
     # Task Execution Endpoint
     @app.post(
@@ -972,6 +1086,118 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         )
         quota = tenant_store.get_quota(req.org_id)
         return {"org_id": req.org_id, **quota.__dict__}
+
+    @app.get(
+        "/admin/retention",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_retention_policy(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.retention.get",
+                actor=actor,
+                org_id=audit_org,
+                target_type="retention",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        if org_id:
+            policy = tenant_store.get_retention_policy(org_id)
+            return {"org_id": org_id, "max_events": policy.max_events}
+        return [
+            {"org_id": org.org_id, "max_events": tenant_store.get_retention_policy(org.org_id).max_events}
+            for org in tenant_store.list_orgs()
+        ]
+
+    @app.post(
+        "/admin/retention",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_retention_policy(req: RetentionPolicyRequest, request: Request):
+        tenant_store.set_retention_policy(
+            req.org_id,
+            RetentionPolicyConfig(max_events=req.max_events),
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.retention.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="retention",
+                metadata=req.model_dump(),
+            )
+        )
+        policy = tenant_store.get_retention_policy(req.org_id)
+        return {"org_id": req.org_id, "max_events": policy.max_events}
+
+    @app.get(
+        "/admin/schedules",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_schedules(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.schedules.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="schedule",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        return [asdict(entry) for entry in scheduler.list_schedules(org_id)]
+
+    @app.post(
+        "/admin/schedules",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_schedule(req: ScheduleCreateRequest, request: Request):
+        entry = scheduler.add_schedule(
+            org_id=req.org_id,
+            task=req.task,
+            cron=req.cron,
+            enabled=req.enabled,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.schedules.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="schedule",
+                target_id=entry.schedule_id,
+                metadata=asdict(entry),
+            )
+        )
+        return asdict(entry)
+
+    @app.delete(
+        "/admin/schedules/{schedule_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def delete_schedule(schedule_id: str, request: Request):
+        removed = scheduler.remove_schedule(schedule_id)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.schedules.delete",
+                actor=actor,
+                org_id=audit_org,
+                target_type="schedule",
+                target_id=schedule_id,
+                metadata={"removed": removed},
+            )
+        )
+        if not removed:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        return {"schedule_id": schedule_id, "removed": True}
 
     @app.get(
         "/admin/model-policies",

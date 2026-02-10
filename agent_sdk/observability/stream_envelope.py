@@ -111,3 +111,25 @@ class StreamEnvelope:
 
     def to_sse(self) -> str:
         return f"data: {self.to_json()}\n\n"
+
+
+def is_valid_run_transition(current: RunStatus, new: RunStatus) -> bool:
+    """Validate run status transitions."""
+    if current == new:
+        return True
+    allowed = {
+        RunStatus.ACCEPTED: {
+            RunStatus.RUNNING,
+            RunStatus.COMPLETED,
+            RunStatus.ERROR,
+            RunStatus.CANCELED,
+            RunStatus.TIMEOUT,
+        },
+        RunStatus.RUNNING: {
+            RunStatus.COMPLETED,
+            RunStatus.ERROR,
+            RunStatus.CANCELED,
+            RunStatus.TIMEOUT,
+        },
+    }
+    return new in allowed.get(current, set())

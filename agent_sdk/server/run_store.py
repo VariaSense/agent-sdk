@@ -7,13 +7,16 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, TYPE_CHECKING
 
 from agent_sdk.observability.stream_envelope import StreamEnvelope, StreamChannel
 from agent_sdk.storage.base import StorageBackend
 from agent_sdk.observability.run_logs import RunLogExporter
 from agent_sdk.observability.event_retention import EventRetentionPolicy
 from agent_sdk.observability.redaction import Redactor
+
+if TYPE_CHECKING:
+    from agent_sdk.server.multi_tenant import MultiTenantStore
 
 
 @dataclass
@@ -32,6 +35,7 @@ class RunEventStore:
         storage: Optional[StorageBackend] = None,
         retention_policy: Optional[EventRetentionPolicy] = None,
         redactor: Optional[Redactor] = None,
+        tenant_store: Optional["MultiTenantStore"] = None,
     ):
         self._runs: Dict[str, RunBuffer] = {}
         self._max_events = max_events
@@ -40,6 +44,7 @@ class RunEventStore:
         self._storage = storage
         self._retention_policy = retention_policy or EventRetentionPolicy()
         self._redactor = redactor
+        self._tenant_store = tenant_store
 
     def create_run(self, run_id: str) -> None:
         if run_id in self._runs:
@@ -64,7 +69,16 @@ class RunEventStore:
         if self._storage is not None:
             try:
                 self._storage.append_event(redacted_event)
-                cutoff = self._retention_policy.cutoff_seq(redacted_event.seq)
+                retention = self._retention_policy
+                if self._tenant_store is not None:
+                    org_id = redacted_event.metadata.get("org_id", "default")
+                    org_policy = self._tenant_store.get_retention_policy(org_id)
+                    if org_policy.max_events:
+                        retention = EventRetentionPolicy(
+                            max_events=org_policy.max_events,
+                            enabled=True,
+                        )
+                cutoff = retention.cutoff_seq(redacted_event.seq)
                 if cutoff is not None:
                     self._storage.delete_events(run_id, before_seq=cutoff)
             except Exception:

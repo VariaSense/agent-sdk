@@ -12,6 +12,7 @@ from agent_sdk.server.multi_tenant import (
     User,
     APIKeyRecord,
     QuotaLimits,
+    RetentionPolicyConfig,
     ModelPolicy,
 )
 
@@ -52,6 +53,12 @@ class ControlPlaneBackend:
     def get_quota(self, org_id: str) -> QuotaLimits:
         raise NotImplementedError
 
+    def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
+        raise NotImplementedError
+
+    def get_retention_policy(self, org_id: str) -> Optional[RetentionPolicyConfig]:
+        raise NotImplementedError
+
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
         raise NotImplementedError
 
@@ -78,7 +85,8 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     name TEXT,
                     created_at TEXT,
                     quotas_json TEXT,
-                    model_policy_json TEXT
+                    model_policy_json TEXT,
+                    retention_json TEXT
                 )
                 """
             )
@@ -114,6 +122,7 @@ class SQLiteControlPlane(ControlPlaneBackend):
             self._ensure_column(conn, "api_keys", "rotated_at", "TEXT")
             self._ensure_column(conn, "api_keys", "rate_limit_per_minute", "INTEGER")
             self._ensure_column(conn, "api_keys", "ip_allowlist_json", "TEXT")
+            self._ensure_column(conn, "orgs", "retention_json", "TEXT")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
@@ -250,6 +259,22 @@ class SQLiteControlPlane(ControlPlaneBackend):
             data = json.loads(row["quotas_json"] or "{}")
             return QuotaLimits(**data)
 
+    def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
+        self.ensure_org(org_id)
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE orgs SET retention_json = ? WHERE org_id = ?",
+                (json.dumps(asdict(policy)), org_id),
+            )
+
+    def get_retention_policy(self, org_id: str) -> Optional[RetentionPolicyConfig]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT retention_json FROM orgs WHERE org_id = ?", (org_id,)).fetchone()
+            if not row or not row["retention_json"]:
+                return None
+            data = json.loads(row["retention_json"] or "{}")
+            return RetentionPolicyConfig(**data)
+
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
         self.ensure_org(org_id)
         with self._connect() as conn:
@@ -285,7 +310,8 @@ class PostgresControlPlane(ControlPlaneBackend):
                     name TEXT,
                     created_at TEXT,
                     quotas_json JSONB,
-                    model_policy_json JSONB
+                    model_policy_json JSONB,
+                    retention_json JSONB
                 );
                 """
             )
@@ -450,6 +476,23 @@ class PostgresControlPlane(ControlPlaneBackend):
             if not row or not row[0]:
                 return QuotaLimits()
             return QuotaLimits(**row[0])
+
+    def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
+        self.ensure_org(org_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE orgs SET retention_json = %s WHERE org_id = %s",
+                (json.dumps(asdict(policy)), org_id),
+            )
+        self._conn.commit()
+
+    def get_retention_policy(self, org_id: str) -> Optional[RetentionPolicyConfig]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT retention_json FROM orgs WHERE org_id = %s", (org_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None
+            return RetentionPolicyConfig(**row[0])
 
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
         self.ensure_org(org_id)

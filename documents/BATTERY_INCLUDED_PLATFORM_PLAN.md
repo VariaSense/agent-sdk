@@ -3,12 +3,13 @@
 ## Purpose
 Deliver a "battery-included" experience on top of agent-sdk while keeping the SDK as the stable agent runtime. This plan defines what to build, in what order, and the concrete deliverables to track implementation.
 
-## Current Status (as of 2026-02-07)
+## Current Status (as of 2026-02-09)
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
 - Phase 4: Production hardening complete.
 - Phase 5: Production-grade platform maturity complete.
+- Phase 6: Enterprise readiness & ops scale complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -590,3 +591,105 @@ Estimate: 3-5 days.
 - Provider streaming works with tracing enabled.
 - Auth supports OIDC/JWT and key rotation in tests.
 - Client SDKs pass integration tests against local server.
+
+---
+
+## Phase 6: Enterprise Readiness & Ops Scale (optional, 12-20 weeks)
+
+### Objective
+Close remaining enterprise and operational gaps to make agent-sdk a production-grade platform foundation for large customers.
+
+### 6.1 Platform Operations and Observability
+- Prometheus metrics endpoint for runtime/queue/provider metrics.
+- OTel exporter presets and production tracing guidance.
+- Dashboard integration templates (Grafana/Datadog).
+
+Deliverables:
+- `/metrics` endpoint + Prometheus exporter.
+- OTel exporter configuration presets.
+- Docs: metrics + tracing integration guide.
+
+### 6.2 Deployment Artifacts
+- Kubernetes manifests (deployment/service/ingress).
+- Optional Helm chart for versioned releases.
+- Readiness/liveness probes and autoscaling guidance.
+
+Deliverables:
+- `deploy/k8s` manifests (or Helm chart).
+- Docs: production deployment (K8s).
+
+### 6.3 Schema Migrations and Compatibility
+- Alembic migrations for storage + control plane.
+- Backward-compatible schema versioning policy.
+- Upgrade validation script.
+
+Deliverables:
+- Alembic migration setup + CLI hooks.
+- Docs: migration + compatibility policy.
+
+### 6.4 Security and Compliance Expansion
+- Secrets manager integration (AWS/GCP/Azure) interface.
+- Encryption-at-rest guidance and optional field-level encryption hooks.
+- Data retention per-tenant controls.
+
+Deliverables:
+- `agent_sdk/secrets` cloud integrations.
+- Docs: compliance + retention controls.
+
+### 6.5 Runtime and Scheduling
+- Scheduled/cron runs.
+- Cancellation semantics and run lifecycle enforcement.
+- Distributed queue backend option (Redis/Kafka/SQS).
+
+Deliverables:
+- Scheduler subsystem.
+- Queue backend adapter + docs.
+
+### 6.6 API Contract & SDK Compatibility
+- API versioning strategy (`/v1` + headers).
+- Deprecation policy + automated warnings.
+- Client SDK compatibility checks.
+
+Deliverables:
+- Versioned API routing.
+- Docs: API versioning + deprecation.
+
+### Exit Criteria
+- Metrics endpoint and tracing presets validated.
+- K8s deployable with probes and basic autoscaling guidance.
+- Migrations are versioned and tested.
+- API versioning policy published and enforced.
+
+---
+
+## Phase 6 Backlog (Prioritized, Rough Estimates)
+
+1. Prometheus `/metrics` endpoint + exporter integration. **(Completed)**  
+Estimate: 3-5 days.
+
+2. OTel exporter presets + tracing docs (OTLP, stdout). **(Completed)**  
+Estimate: 3-5 days.
+
+3. Kubernetes deployment manifests + probes + autoscaling guidance. **(Completed)**  
+Estimate: 1-2 weeks.
+
+4. Alembic migrations for storage/control plane + upgrade script. **(Completed)**  
+Estimate: 1-2 weeks.
+
+5. Secrets manager integrations (AWS/GCP/Azure) interface. **(Completed)**  
+Estimate: 1-2 weeks.
+
+6. Data retention per-tenant controls + admin APIs. **(Completed)**  
+Estimate: 1 week.
+
+7. Scheduled/cron runs + run lifecycle state enforcement. **(Completed)**  
+Estimate: 2-3 weeks.
+
+8. Distributed queue backend adapter (Redis or SQS) + docs. **(Completed)**  
+Estimate: 1-2 weeks.
+
+9. API versioning (`/v1`) + deprecation warnings. **(Completed)**  
+Estimate: 1 week.
+
+10. Client SDK compatibility checks + version policy docs. **(Completed)**  
+Estimate: 3-5 days.

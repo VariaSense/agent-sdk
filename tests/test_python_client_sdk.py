@@ -17,6 +17,8 @@ def test_client_headers_and_payload():
         captured["method"] = method
         captured["path"] = path
         captured["payload"] = payload
+        if path == "/v1/health":
+            return {"version": "0.1.0"}
         return {"ok": True}
 
     client = AgentSDKClient("http://localhost:9000", api_key="key", org_id="org", request_func=_request)
@@ -26,3 +28,6 @@ def test_client_headers_and_payload():
     assert captured["method"] == "POST"
     assert captured["path"] == "/run"
     assert captured["payload"]["task"] == "hello"
+
+    compatibility = client.check_compatibility()
+    assert compatibility["compatible"] is True
