@@ -7,6 +7,7 @@ import json
 import subprocess
 from datetime import datetime, timezone
 import secrets
+import zipfile
 
 from agent_sdk.config.loader import load_config
 from agent_sdk.core.runtime import PlannerExecutorRuntime
@@ -27,6 +28,7 @@ serve_cmd = typer.Typer(help="Serve agents over HTTP")
 doctor_cmd = typer.Typer(help="Diagnostics and health checks")
 backup_cmd = typer.Typer(help="Backup and restore storage/control plane data")
 registry_cmd = typer.Typer(help="Tool pack registry operations")
+compliance_cmd = typer.Typer(help="Compliance reporting")
 
 
 def collect_doctor_checks(config: str) -> list[dict]:
@@ -395,3 +397,27 @@ def registry_pull(name: str, version: str = "", root: str = "tool_registry"):
     registry = LocalRegistry(root=root)
     manifest = registry.pull(name, version or None)
     typer.echo(json.dumps(manifest.to_dict(), indent=2))
+
+
+@compliance_cmd.command("report")
+def compliance_report(output: str = "compliance_report.zip"):
+    """Generate a compliance evidence bundle."""
+    backend = _load_control_plane_backend()
+    bundles = backend.list_policy_bundles()
+    retention = []
+    try:
+        retention = backend.list_orgs()
+    except Exception:
+        retention = []
+    evidence = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "policy_bundles": [bundle.__dict__ for bundle in bundles],
+        "orgs": [org.__dict__ for org in retention],
+        "env": {
+            "AGENT_SDK_AUDIT_HASH_CHAIN": os.getenv("AGENT_SDK_AUDIT_HASH_CHAIN"),
+            "AGENT_SDK_RETENTION_DEFAULT": os.getenv("AGENT_SDK_EVENT_RETENTION_MAX_EVENTS"),
+        },
+    }
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("compliance.json", json.dumps(evidence, indent=2))
+    typer.echo(f"Wrote {output}")

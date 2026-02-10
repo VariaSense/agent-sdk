@@ -174,12 +174,42 @@ class APIKeyCreateRequest(BaseModel):
     """Create a new API key for an org."""
 
     org_id: str = Field(..., min_length=1, max_length=100)
+    project_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=100)
     role: str = Field(default="developer", min_length=1, max_length=50)
     scopes: List[str] = Field(default_factory=list)
     expires_at: Optional[str] = None
     rate_limit_per_minute: Optional[int] = Field(default=None, ge=1)
     ip_allowlist: List[str] = Field(default_factory=list)
+
+
+class ProjectCreateRequest(BaseModel):
+    """Request to create a project/workspace."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    tags: Dict[str, str] = Field(default_factory=dict)
+
+
+class WebhookSubscriptionRequest(BaseModel):
+    """Request to create a webhook subscription."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    url: str = Field(..., min_length=1, max_length=2000)
+    event_types: List[str] = Field(default_factory=list)
+    secret: Optional[str] = Field(default=None, max_length=200)
+    active: bool = Field(default=True)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    backoff_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
+
+
+class SecretRotationRequest(BaseModel):
+    """Request to set secret rotation policy."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    secret_id: str = Field(..., min_length=1, max_length=200)
+    rotation_days: int = Field(..., ge=1, le=3650)
+    last_rotated_at: Optional[str] = None
 
 
 class DeviceRegisterRequest(BaseModel):

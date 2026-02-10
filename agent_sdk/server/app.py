@@ -19,8 +19,10 @@ from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.plugins.loader import PluginLoader
 from agent_sdk.security import (
     verify_api_key,
+    get_api_key_info,
     get_api_key_manager,
     require_scopes,
+    APIKeyInfo,
     SCOPE_ADMIN,
     SCOPE_RUN_READ,
     SCOPE_RUN_WRITE,
@@ -52,6 +54,9 @@ from agent_sdk.validators import (
     PromptPolicyCreateRequest,
     PolicyBundleCreateRequest,
     PolicyBundleAssignRequest,
+    ProjectCreateRequest,
+    WebhookSubscriptionRequest,
+    SecretRotationRequest,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
 from agent_sdk.observability.stream_envelope import (
@@ -85,6 +90,9 @@ from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
 from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
 from agent_sdk.reliability.policy import ReliabilityManager, RetryPolicy, CircuitBreakerPolicy, ReplayStore
+from agent_sdk.webhooks import WebhookDispatcher, WebhookSubscription, WebhookAuditExporter
+from agent_sdk.archival import LocalArchiveBackend
+from agent_sdk.llm.health import ProviderHealthMonitor
 from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
 from agent_sdk.server.device_registry import DeviceRegistry
@@ -117,6 +125,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         loader.load()
         planner, executor = load_config(config_path, MockLLMClient())
         runtime = PlannerExecutorRuntime(planner, executor)
+        provider_health = ProviderHealthMonitor()
         tracing_enabled = os.getenv("AGENT_SDK_TRACING_ENABLED", "").lower() in {
             "1",
             "true",
@@ -180,6 +189,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         else:
             db_path = storage_path or os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
             storage = SQLiteStorage(db_path)
+        archive_backend = LocalArchiveBackend(os.getenv("AGENT_SDK_ARCHIVE_PATH", "archives"))
         retention_policy = EventRetentionPolicy.from_env()
         redaction_policy = RedactionPolicy.from_env()
         redactor = Redactor(redaction_policy)
@@ -197,6 +207,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             control_plane = SQLiteControlPlane(cp_path)
         tenant_store = MultiTenantStore(control_plane)
         policy_engine = PolicyEngine(tenant_store)
+        webhook_dispatcher = WebhookDispatcher(tenant_store.list_webhook_subscriptions())
         reliability_enabled = os.getenv("AGENT_SDK_RELIABILITY_ENABLED", "").lower() in {
             "1",
             "true",
@@ -349,6 +360,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             hash_chain=hash_chain,
             http_endpoint=audit_http_endpoint,
             http_timeout_seconds=audit_http_timeout,
+            extra_exporters=[WebhookAuditExporter(webhook_dispatcher)],
         )
         api_key_manager = get_api_key_manager()
         if api_key_manager.api_key:
@@ -359,6 +371,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 role=os.getenv("API_KEY_ROLE", "admin"),
                 scopes=[s.strip() for s in os.getenv("API_KEY_SCOPES", "").split(",") if s.strip()],
                 expires_at=os.getenv("API_KEY_EXPIRES_AT"),
+                project_id=os.getenv("API_KEY_PROJECT_ID"),
             )
             audit_logger.emit(
                 AuditLogEntry(
@@ -406,6 +419,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.observability = observability
     app.state.prometheus_enabled = prometheus_enabled
     app.state.prometheus_registry = prometheus_registry
+    app.state.provider_health = provider_health
 
     ui_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ui"))
     ui_source = os.path.join(ui_root, "index.html")
@@ -416,8 +430,21 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             return ui_dist
         return ui_source
 
-    def _org_id_from_request(request: Request) -> str:
-        return request.headers.get("X-Org-Id", "default")
+    def _org_id_from_request(request: Request, key_info: Optional[APIKeyInfo] = None) -> str:
+        header_org = request.headers.get("X-Org-Id")
+        if header_org:
+            return header_org
+        if key_info:
+            return key_info.org_id
+        return "default"
+
+    def _project_id_from_request(request: Request, key_info: Optional[APIKeyInfo]) -> Optional[str]:
+        header_project = request.headers.get("X-Project-Id")
+        if key_info and key_info.project_id:
+            if header_project and header_project != key_info.project_id:
+                raise HTTPException(status_code=403, detail="Project scope mismatch")
+            return key_info.project_id
+        return header_project
 
     def _audit_actor(request: Request) -> tuple[str, str]:
         api_key = request.headers.get("X-API-Key", "")
@@ -500,6 +527,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         decision = policy_engine.evaluate_model(org_id, model_id)
         if not decision.allowed:
             raise HTTPException(status_code=403, detail=f"Policy denied model: {decision.reason}")
+
+    def _assert_provider_health(provider: Optional[str]) -> None:
+        if not provider:
+            return
+        status = provider_health.check(provider)
+        if not status.healthy:
+            raise HTTPException(status_code=503, detail=f"Provider unhealthy: {status.reason}")
 
     async def _submit_scheduled(entry):
         org_id = entry.org_id
@@ -667,8 +701,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.run_store = run_store
     app.state.storage = storage
     app.state.event_storage = storage if storage_backend == "postgres" else None
+    app.state.archive_backend = archive_backend
     app.state.tenant_store = tenant_store
     app.state.policy_engine = policy_engine
+    app.state.webhook_dispatcher = webhook_dispatcher
     app.state.device_registry = device_registry
     app.state.audit_logger = audit_logger
     app.state.prompt_registry = prompt_registry
@@ -756,7 +792,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_WRITE]))],
         tags=["Tasks"]
     )
-    async def run_task(req: RunTaskRequest, request: Request):
+    async def run_task(
+        req: RunTaskRequest,
+        request: Request,
+        key_info: APIKeyInfo = Depends(get_api_key_info),
+    ):
         """Execute a task using the planner-executor runtime
         
         Args:
@@ -767,7 +807,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         """
         try:
             logger.info(f"Executing task: {req.task[:100]}")
-            org_id = _org_id_from_request(request)
+            org_id = _org_id_from_request(request, key_info)
+            project_id = _project_id_from_request(request, key_info)
+            if project_id:
+                project = tenant_store.get_project(project_id)
+                if not project or project.org_id != org_id:
+                    raise HTTPException(status_code=404, detail="Project not found")
             _assert_residency(org_id)
             _apply_retention(org_id)
             idempotency_key = request.headers.get("Idempotency-Key")
@@ -785,15 +830,23 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
             session = SessionMetadata(session_id=session_id, org_id=org_id)
             storage.create_session(session)
+            webhook_dispatcher.dispatch(
+                "session.created",
+                {"session_id": session_id, "org_id": org_id, "project_id": project_id},
+            )
             tenant_store.record_session(org_id)
 
             requested_model = planner.context.model_config.model_id if planner.context.model_config else None
             resolved_model = tenant_store.resolve_model(org_id, requested_model)
             _assert_model_policy(org_id, resolved_model)
+            _assert_provider_health(planner.context.model_config.provider if planner.context.model_config else None)
             run_metadata = {
                 "request_id": request.state.request_id,
                 "trace_id": request.state.trace_id,
             }
+            run_tags = dict(req.tags or {})
+            if project_id:
+                run_tags.setdefault("project_id", project_id)
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
@@ -801,7 +854,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.RUNNING,
                 model=resolved_model,
-                tags=req.tags or {},
+                tags=run_tags,
                 metadata=run_metadata,
             )
             storage.create_run(run_meta)
@@ -817,11 +870,21 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
                 model=resolved_model,
-                tags=req.tags or {},
+                tags=run_tags,
                 metadata=run_metadata,
             )
             storage.update_run(run_meta)
             tenant_store.record_tokens(org_id, token_count)
+            webhook_dispatcher.dispatch(
+                "run.completed",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "org_id": org_id,
+                    "project_id": project_id,
+                    "status": "completed",
+                },
+            )
             result_data = {
                 "run_id": run_id,
                 "session_id": session_id,
@@ -858,6 +921,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             raise
         except AgentSDKException as e:
             logger.error(f"Agent SDK error: {e}")
+            if "run_id" in locals():
+                webhook_dispatcher.dispatch(
+                    "run.failed",
+                    {"run_id": run_id, "session_id": session_id, "org_id": org_id, "error": str(e)},
+                )
             raise HTTPException(
                 status_code=500,
                 detail=_hinted_detail(
@@ -867,6 +935,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         except Exception as e:
             logger.error(f"Unexpected error during task execution: {e}", exc_info=True)
+            if "run_id" in locals():
+                webhook_dispatcher.dispatch(
+                    "run.failed",
+                    {"run_id": run_id, "session_id": session_id, "org_id": org_id, "error": str(e)},
+                )
             raise HTTPException(
                 status_code=500,
                 detail=_hinted_detail(
@@ -881,7 +954,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_RUN_WRITE]))],
         tags=["Tasks"]
     )
-    async def run_task_stream(req: RunTaskRequest, request: Request):
+    async def run_task_stream(
+        req: RunTaskRequest,
+        request: Request,
+        key_info: APIKeyInfo = Depends(get_api_key_info),
+    ):
         """Execute a task and stream events in real-time
         
         Args:
@@ -946,11 +1023,21 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         agent_id="planner-executor",
                         status=RunStatus.COMPLETED,
                         model=model_id,
-                        tags=req.tags or {},
+                        tags=run_tags,
                         metadata={"token_count": token_count},
                     )
                 )
                 tenant_store.record_tokens(org_id, token_count)
+                webhook_dispatcher.dispatch(
+                    "run.completed",
+                    {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "org_id": org_id,
+                        "project_id": project_id,
+                        "status": "completed",
+                    },
+                )
             except Exception as e:
                 logger.error(f"Error during streaming execution: {e}", exc_info=True)
                 run_store.append_event(
@@ -973,8 +1060,18 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         agent_id="planner-executor",
                         status=RunStatus.ERROR,
                         model=model_id,
-                        tags=req.tags or {},
+                        tags=run_tags,
                     )
+                )
+                webhook_dispatcher.dispatch(
+                    "run.failed",
+                    {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "org_id": org_id,
+                        "project_id": project_id,
+                        "error": str(e),
+                    },
                 )
 
         async def event_generator(run_id: str):
@@ -992,17 +1089,30 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                     status=RunStatus.ERROR.value,
                 ).to_sse()
 
-        org_id = _org_id_from_request(request)
+        org_id = _org_id_from_request(request, key_info)
+        project_id = _project_id_from_request(request, key_info)
+        if project_id:
+            project = tenant_store.get_project(project_id)
+            if not project or project.org_id != org_id:
+                raise HTTPException(status_code=404, detail="Project not found")
         allowed, reason = tenant_store.check_quota(org_id, new_session=True, new_run=True)
         if not allowed:
             raise HTTPException(status_code=429, detail=f"Quota exceeded: {reason}")
         run_id = new_run_id()
         session_id = new_session_id()
         storage.create_session(SessionMetadata(session_id=session_id, org_id=org_id))
+        webhook_dispatcher.dispatch(
+            "session.created",
+            {"session_id": session_id, "org_id": org_id, "project_id": project_id},
+        )
         tenant_store.record_session(org_id)
         requested_model = planner.context.model_config.model_id if planner.context.model_config else None
         resolved_model = tenant_store.resolve_model(org_id, requested_model)
         _assert_model_policy(org_id, resolved_model)
+        _assert_provider_health(planner.context.model_config.provider if planner.context.model_config else None)
+        run_tags = dict(req.tags or {})
+        if project_id:
+            run_tags.setdefault("project_id", project_id)
         storage.create_run(
             RunMetadata(
                 run_id=run_id,
@@ -1011,7 +1121,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.RUNNING,
                 model=resolved_model,
-                tags=req.tags or {},
+                tags=run_tags,
             )
         )
         tenant_store.record_run(org_id)
@@ -1183,6 +1293,209 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         return [asdict(org) for org in tenant_store.list_orgs()]
 
     @app.get(
+        "/admin/projects",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_projects(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.projects.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="project",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        return [asdict(project) for project in tenant_store.list_projects(org_id)]
+
+    @app.post(
+        "/admin/projects",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_project(req: ProjectCreateRequest, request: Request):
+        project = tenant_store.create_project(req.org_id, req.name, tags=req.tags)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.projects.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="project",
+                target_id=project.project_id,
+                metadata=asdict(project),
+            )
+        )
+        return asdict(project)
+
+    @app.get(
+        "/admin/webhooks",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_webhooks(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.webhooks.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="webhook",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        return [asdict(sub) for sub in tenant_store.list_webhook_subscriptions(org_id)]
+
+    @app.post(
+        "/admin/webhooks",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_webhook(req: WebhookSubscriptionRequest, request: Request):
+        subscription = WebhookSubscription(
+            subscription_id=f"wh_{secrets.token_hex(6)}",
+            org_id=req.org_id,
+            url=req.url,
+            event_types=req.event_types,
+            secret=req.secret,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            active=req.active,
+            max_attempts=req.max_attempts,
+            backoff_seconds=req.backoff_seconds,
+        )
+        stored = tenant_store.create_webhook_subscription(subscription)
+        webhook_dispatcher.update_subscriptions(tenant_store.list_webhook_subscriptions())
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.webhooks.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="webhook",
+                target_id=stored.subscription_id,
+                metadata={"url": stored.url, "event_types": stored.event_types},
+            )
+        )
+        return asdict(stored)
+
+    @app.delete(
+        "/admin/webhooks/{subscription_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def delete_webhook(subscription_id: str, request: Request):
+        removed = tenant_store.delete_webhook_subscription(subscription_id)
+        webhook_dispatcher.update_subscriptions(tenant_store.list_webhook_subscriptions())
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.webhooks.delete",
+                actor=actor,
+                org_id=audit_org,
+                target_type="webhook",
+                target_id=subscription_id,
+                metadata={"removed": removed},
+            )
+        )
+        if not removed:
+            raise HTTPException(status_code=404, detail="Webhook not found")
+        return {"deleted": True}
+
+    @app.get(
+        "/admin/webhooks/dlq",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_webhook_dlq(request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.webhooks.dlq.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="webhook_dlq",
+            )
+        )
+        return [delivery.__dict__ for delivery in webhook_dispatcher.list_dlq()]
+
+    @app.get(
+        "/admin/secrets/rotation",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_secret_rotation(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.secrets.rotation.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="secret_rotation",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        return [asdict(policy) for policy in tenant_store.list_secret_rotation_policies(org_id)]
+
+    @app.post(
+        "/admin/secrets/rotation",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_secret_rotation(req: SecretRotationRequest, request: Request):
+        policy = tenant_store.set_secret_rotation_policy(
+            req.org_id,
+            req.secret_id,
+            req.rotation_days,
+            last_rotated_at=req.last_rotated_at,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.secrets.rotation.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="secret_rotation",
+                target_id=req.secret_id,
+                metadata=req.model_dump(),
+            )
+        )
+        return asdict(policy)
+
+    @app.get(
+        "/admin/secrets/health",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def secret_health(request: Request, org_id: Optional[str] = None):
+        policies = tenant_store.list_secret_rotation_policies(org_id)
+        now = datetime.now(timezone.utc)
+        results = []
+        for policy in policies:
+            last = None
+            if policy.last_rotated_at:
+                try:
+                    last = datetime.fromisoformat(policy.last_rotated_at)
+                except ValueError:
+                    last = None
+            age_days = None
+            if last:
+                age_days = (now - last).days
+            due = age_days is not None and age_days >= policy.rotation_days
+            results.append(
+                {
+                    "secret_id": policy.secret_id,
+                    "org_id": policy.org_id,
+                    "rotation_days": policy.rotation_days,
+                    "last_rotated_at": policy.last_rotated_at,
+                    "age_days": age_days,
+                    "due": due,
+                }
+            )
+        return {"results": results, "count": len(results)}
+
+    @app.get(
         "/admin/api-keys",
         dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
@@ -1206,6 +1519,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         tags=["Admin"],
     )
     async def create_api_key(req: APIKeyCreateRequest, request: Request):
+        if req.project_id:
+            project = tenant_store.get_project(req.project_id)
+            if not project or project.org_id != req.org_id:
+                raise HTTPException(status_code=404, detail="Project not found")
         record = tenant_store.create_api_key(
             req.org_id,
             req.label,
@@ -1214,12 +1531,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             expires_at=req.expires_at,
             rate_limit_per_minute=req.rate_limit_per_minute,
             ip_allowlist=req.ip_allowlist,
+            project_id=req.project_id,
         )
         get_api_key_manager().add_key(
             record.key,
             role=req.role,
             scopes=req.scopes,
             org_id=req.org_id,
+            project_id=req.project_id,
             expires_at=req.expires_at,
             rate_limit_per_minute=req.rate_limit_per_minute,
             ip_allowlist=req.ip_allowlist,
@@ -1232,7 +1551,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=req.org_id,
                 target_type="api_key",
                 target_id=record.key_id,
-                metadata={"label": req.label, "role": req.role, "scopes": req.scopes},
+                metadata={
+                    "label": req.label,
+                    "role": req.role,
+                    "scopes": req.scopes,
+                    "project_id": req.project_id,
+                },
             )
         )
         return asdict(record)
@@ -1285,6 +1609,29 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         )
         return [asdict(summary) for summary in tenant_store.usage_summary(org_id)]
+
+    @app.get(
+        "/admin/providers/health",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def provider_health_status(request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.providers.health",
+                actor=actor,
+                org_id=audit_org,
+                target_type="provider_health",
+            )
+        )
+        providers = []
+        if planner.context.model_config:
+            providers.append(planner.context.model_config.provider)
+        if executor.context.model_config:
+            providers.append(executor.context.model_config.provider)
+        results = [status.__dict__ for status in provider_health.check_all(list(set(providers)))]
+        return {"providers": results}
 
     @app.get(
         "/admin/usage/export",
@@ -1349,6 +1696,68 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         if format.lower() != "json":
             raise HTTPException(status_code=400, detail="format must be json or csv")
         return {"results": results, "count": len(results)}
+
+    @app.post(
+        "/admin/archives/export",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def export_archive(
+        request: Request,
+        run_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ):
+        if not run_id and not session_id:
+            raise HTTPException(status_code=400, detail="run_id or session_id required")
+        if run_id and session_id:
+            raise HTTPException(status_code=400, detail="provide only one of run_id or session_id")
+        actor, audit_org = _audit_actor(request)
+        if run_id:
+            path = archive_backend.export_run(storage, run_id)
+            audit_logger.emit(
+                AuditLogEntry(
+                    action="admin.archive.export_run",
+                    actor=actor,
+                    org_id=audit_org,
+                    target_type="archive",
+                    target_id=run_id,
+                    metadata={"path": path},
+                )
+            )
+            return {"path": path}
+        path = archive_backend.export_session(storage, session_id)  # type: ignore[arg-type]
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.archive.export_session",
+                actor=actor,
+                org_id=audit_org,
+                target_type="archive",
+                target_id=session_id,
+                metadata={"path": path},
+            )
+        )
+        return {"path": path}
+
+    @app.post(
+        "/admin/archives/restore",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def restore_archive(request: Request, path: str):
+        if not path:
+            raise HTTPException(status_code=400, detail="path required")
+        archive_backend.restore(storage, path)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.archive.restore",
+                actor=actor,
+                org_id=audit_org,
+                target_type="archive",
+                metadata={"path": path},
+            )
+        )
+        return {"restored": True}
 
     @app.get(
         "/admin/users",

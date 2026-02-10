@@ -3,7 +3,7 @@
 ## Purpose
 Deliver a "battery-included" experience on top of agent-sdk while keeping the SDK as the stable agent runtime. This plan defines what to build, in what order, and the concrete deliverables to track implementation.
 
-## Current Status (as of 2026-02-09)
+## Current Status (as of 2026-02-10)
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
@@ -11,6 +11,8 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 5: Production-grade platform maturity complete.
 - Phase 6: Enterprise readiness & ops scale complete.
 - Phase 7: Enterprise IAM, compliance, and ecosystem complete.
+- Phase 8: Governance, DR, and ecosystem maturity complete.
+- Phase 9: Operational excellence & enterprise governance complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -884,3 +886,94 @@ Estimate: 2-3 weeks.
 
 6. Reliability policies (retry/circuit breaker/fallback) + replay mode. **(Completed)**  
 Estimate: 2-3 weeks.
+
+---
+
+## Phase 9: Operational Excellence & Enterprise Governance (optional, 12-20 weeks)
+
+### Objective
+Finish remaining gaps for large-scale enterprise operations: project-level governance, event distribution, archival, and compliance reporting with minimal custom glue.
+
+### 9.1 Project/Workspace Governance
+- Project/workspace entity under orgs (with per-project quotas and tags).
+- Project-scoped API keys and usage reporting.
+- Project-level policy overrides.
+
+Deliverables:
+- `agent_sdk/project` data model + storage.
+- Admin APIs for projects and project-scoped keys.
+- Usage export grouped by project.
+
+### 9.2 Event Subscriptions & Webhooks
+- Event subscriptions for runs/sessions/audit events.
+- Webhook delivery with retries, backoff, and DLQ.
+- Signing/verification for outbound webhooks.
+
+Deliverables:
+- Webhook dispatcher + subscription registry.
+- Admin APIs to create/list subscriptions.
+
+### 9.3 Run Export & Archival
+- Run/session export to object storage (S3/GCS/Azure).
+- Optional retention tiering (hot vs archived).
+- Restore from archive for audit or incident response.
+
+Deliverables:
+- `agent_sdk/archival` exporters + docs.
+- Admin API for export/restore.
+
+### 9.4 Secrets Rotation & Access Auditing
+- Rotation policies for stored credentials.
+- Audit log entries for secret access/rotation.
+- Health checks for expiring credentials.
+
+Deliverables:
+- Rotation scheduler hooks + admin APIs.
+- Docs: secret rotation runbook.
+
+### 9.5 Provider Health + Failover
+- Health checks for LLM providers and tool backends.
+- Provider failover policy integration with routing.
+- Status endpoints for provider health.
+
+Deliverables:
+- Health monitor + failover hooks.
+- `/admin/providers/health` API.
+
+### 9.6 Compliance Reporting
+- Compliance report generator (policies, audit chain verification, configs).
+- Export bundle for audits (zip/json).
+
+Deliverables:
+- `agent-sdk compliance-report` CLI.
+- Docs: compliance evidence workflow.
+
+### Exit Criteria
+- Projects and project-scoped keys enforced in APIs and usage export.
+- Webhook subscriptions deliver with retry/DLQ and signature verification.
+- Run export/archival and restore validated.
+- Secret rotation and audit trails validated.
+- Provider health + failover tested.
+- Compliance report generator produces exportable evidence bundle.
+
+---
+
+## Phase 9 Backlog (Prioritized, Rough Estimates)
+
+1. Project/workspace entities + project-scoped API keys + usage export. **(Completed)**  
+Estimate: 2-3 weeks.
+
+2. Event subscriptions + webhook delivery with retry/DLQ + signatures. **(Completed)**  
+Estimate: 2-3 weeks.
+
+3. Run/session export to object storage + restore. **(Completed)**  
+Estimate: 2-3 weeks.
+
+4. Secrets rotation policies + audit events + health checks. **(Completed)**  
+Estimate: 2-3 weeks.
+
+5. Provider health monitoring + failover integration. **(Completed)**  
+Estimate: 1-2 weeks.
+
+6. Compliance report CLI + evidence bundle export. **(Completed)**  
+Estimate: 1-2 weeks.

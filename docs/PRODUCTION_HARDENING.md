@@ -4,6 +4,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 
 ## Security and Access Control
 - Org scoping enforced via `X-Org-Id`.
+- Project scoping via `X-Project-Id` and project-scoped API keys.
 - RBAC and scopes via API keys (`API_KEY_ROLE`, `API_KEY_SCOPES`).
 - JWT auth (HS256): `AGENT_SDK_JWT_ENABLED=true`, `AGENT_SDK_JWT_SECRET=...`.
 - API key rotation via `/admin/api-keys/{key_id}/rotate`.
@@ -24,6 +25,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Audit logging: `AGENT_SDK_AUDIT_LOG_PATH`, `AGENT_SDK_AUDIT_LOG_STDOUT`.
 - Audit hash chaining: `AGENT_SDK_AUDIT_HASH_CHAIN=true` (tamper-evident logs).
 - Audit export: `/admin/audit-logs/export?format=jsonl|csv`.
+- Webhook subscriptions: `/admin/webhooks` (delivery with retries + DLQ at `/admin/webhooks/dlq`).
 - Data deletion endpoints: `/admin/runs/{id}`, `/admin/sessions/{id}`.
 - PII redaction: `AGENT_SDK_PII_REDACTION_ENABLED=true`.
 - Data residency: set org residency via `/admin/residency` and enforce with `AGENT_SDK_DATA_REGION`.
@@ -33,6 +35,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Per-tenant model policies via `/admin/model-policies`.
 - Quotas via `/admin/quotas` (runs/sessions/tokens).
 - Usage export: `/admin/usage/export?group_by=org_id,project` (CSV/JSON).
+- Provider health: `/admin/providers/health`.
 
 ## Reliability
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
@@ -62,6 +65,17 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Tool Packs
 - Signed manifests: `AGENT_SDK_TOOL_MANIFEST_SECRET`.
 - Local registry CLI: `agent-sdk registry publish|list|pull`.
+
+## Archival
+- Local archive export/restore: `/admin/archives/export` and `/admin/archives/restore`.
+- Archive path: `AGENT_SDK_ARCHIVE_PATH=archives`.
+
+## Secrets Rotation
+- Rotation policies: `/admin/secrets/rotation`.
+- Rotation health: `/admin/secrets/health`.
+
+## Compliance Reporting
+- Evidence bundle: `agent-sdk compliance-report report --output compliance_report.zip`.
 
 ## Operations Checklist
 1. Configure storage and backups (see `docs/BACKUP_RECOVERY.md`).

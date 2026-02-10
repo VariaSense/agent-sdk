@@ -69,6 +69,7 @@ class APIKeyManager:
         role: str = "developer",
         scopes: Optional[List[str]] = None,
         org_id: str = "default",
+        project_id: Optional[str] = None,
         expires_at: Optional[str] = None,
         rate_limit_per_minute: Optional[int] = None,
         ip_allowlist: Optional[List[str]] = None,
@@ -85,6 +86,7 @@ class APIKeyManager:
             role=role,
             scopes=effective_scopes,
             org_id=org_id,
+            project_id=project_id,
             expires_at=expires_at,
             rate_limit_per_minute=rate_limit_per_minute,
             ip_allowlist=ip_allowlist or [],
@@ -121,6 +123,7 @@ class APIKeyInfo:
     role: str
     scopes: List[str]
     org_id: str
+    project_id: Optional[str] = None
     expires_at: Optional[str] = None
     rate_limit_per_minute: Optional[int] = None
     ip_allowlist: List[str] = field(default_factory=list)
@@ -240,6 +243,7 @@ async def verify_api_key(
             role=payload.get("role", ROLE_DEVELOPER),
             scopes=payload.get("scopes") or default_scopes_for_role(payload.get("role", ROLE_DEVELOPER)),
             org_id=payload.get("org_id", "default"),
+            project_id=payload.get("project_id"),
             rate_limit_per_minute=payload.get("rate_limit_per_minute"),
             ip_allowlist=payload.get("ip_allowlist") or [],
         )
@@ -290,6 +294,7 @@ async def get_api_key_info(
             role=role,
             scopes=scopes,
             org_id=payload.get("org_id", "default"),
+            project_id=payload.get("project_id"),
             expires_at=None,
             rate_limit_per_minute=payload.get("rate_limit_per_minute"),
             ip_allowlist=payload.get("ip_allowlist") or [],
@@ -310,6 +315,7 @@ async def get_api_key_info(
             role=ROLE_DEVELOPER,
             scopes=default_scopes_for_role(ROLE_DEVELOPER),
             org_id="default",
+            project_id=None,
         )
     return info
 

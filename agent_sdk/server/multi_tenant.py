@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent_sdk.storage.control_plane import ControlPlaneBackend
+    from agent_sdk.webhooks import WebhookSubscription
 
 
 def _now_iso() -> str:
@@ -26,6 +27,15 @@ class Organization:
     policy_bundle_id: Optional[str] = None
     policy_bundle_version: Optional[int] = None
     policy_overrides: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Project:
+    project_id: str
+    org_id: str
+    name: str
+    created_at: str = field(default_factory=_now_iso)
+    tags: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -52,6 +62,7 @@ class APIKeyRecord:
     rotated_at: Optional[str] = None
     rate_limit_per_minute: Optional[int] = None
     ip_allowlist: List[str] = field(default_factory=list)
+    project_id: Optional[str] = None
 
 
 @dataclass
@@ -74,6 +85,15 @@ class BackupRecord:
     control_plane_backend: str
     control_plane_path: Optional[str]
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SecretRotationPolicy:
+    secret_id: str
+    org_id: str
+    rotation_days: int
+    last_rotated_at: Optional[str] = None
+    created_at: str = field(default_factory=_now_iso)
 
 
 @dataclass(frozen=True)
@@ -102,6 +122,7 @@ class MultiTenantStore:
     def __init__(self, backend: Optional["ControlPlaneBackend"] = None):
         self._backend = backend
         self._orgs: Dict[str, Organization] = {}
+        self._projects: Dict[str, Project] = {}
         self._users: Dict[str, User] = {}
         self._keys: Dict[str, APIKeyRecord] = {}
         self._usage: Dict[str, UsageSummary] = {}
@@ -112,6 +133,8 @@ class MultiTenantStore:
         self._model_policies: Dict[str, ModelPolicy] = {}
         self._policy_bundles: Dict[str, List["PolicyBundle"]] = {}
         self._policy_assignments: Dict[str, "PolicyAssignment"] = {}
+        self._webhook_subscriptions: Dict[str, "WebhookSubscription"] = {}
+        self._secret_rotation: Dict[str, SecretRotationPolicy] = {}
         self._model_catalog: List[str] = []
         self.ensure_org("default", "Default Org")
 
@@ -137,6 +160,27 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.list_orgs()
         return list(self._orgs.values())
+
+    def create_project(self, org_id: str, name: str, tags: Optional[Dict[str, str]] = None) -> Project:
+        self.ensure_org(org_id)
+        project_id = f"proj_{secrets.token_hex(6)}"
+        project = Project(project_id=project_id, org_id=org_id, name=name, tags=tags or {})
+        if self._backend is not None:
+            return self._backend.create_project(project)
+        self._projects[project_id] = project
+        return project
+
+    def list_projects(self, org_id: Optional[str] = None) -> List[Project]:
+        if self._backend is not None:
+            return self._backend.list_projects(org_id)
+        if org_id is None:
+            return list(self._projects.values())
+        return [project for project in self._projects.values() if project.org_id == org_id]
+
+    def get_project(self, project_id: str) -> Optional[Project]:
+        if self._backend is not None:
+            return self._backend.get_project(project_id)
+        return self._projects.get(project_id)
 
     def create_user(self, org_id: str, name: str, is_service_account: bool = False) -> User:
         self.ensure_org(org_id)
@@ -183,6 +227,7 @@ class MultiTenantStore:
         expires_at: Optional[str] = None,
         rate_limit_per_minute: Optional[int] = None,
         ip_allowlist: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
     ) -> APIKeyRecord:
         self.ensure_org(org_id)
         key = f"sk_{secrets.token_urlsafe(24)}"
@@ -190,6 +235,7 @@ class MultiTenantStore:
         record = APIKeyRecord(
             key_id=key_id,
             org_id=org_id,
+            project_id=project_id,
             key=key,
             label=label,
             role=role,
@@ -213,12 +259,14 @@ class MultiTenantStore:
         expires_at: Optional[str] = None,
         rate_limit_per_minute: Optional[int] = None,
         ip_allowlist: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
     ) -> APIKeyRecord:
         self.ensure_org(org_id)
         key_id = f"key_{secrets.token_hex(6)}"
         record = APIKeyRecord(
             key_id=key_id,
             org_id=org_id,
+            project_id=project_id,
             key=key,
             label=label,
             role=role,
@@ -251,6 +299,7 @@ class MultiTenantStore:
             self._keys[key_id] = APIKeyRecord(
                 key_id=current.key_id,
                 org_id=current.org_id,
+                project_id=current.project_id,
                 key=current.key,
                 label=current.label,
                 role=current.role,
@@ -266,6 +315,7 @@ class MultiTenantStore:
             role=current.role,
             scopes=current.scopes,
             expires_at=current.expires_at,
+            project_id=current.project_id,
         )
         return new_record, current
 
@@ -455,6 +505,51 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.get_policy_assignment(org_id)
         return self._policy_assignments.get(org_id)
+
+    def create_webhook_subscription(self, subscription: "WebhookSubscription") -> "WebhookSubscription":
+        if self._backend is not None:
+            return self._backend.create_webhook_subscription(subscription)
+        self._webhook_subscriptions[subscription.subscription_id] = subscription
+        return subscription
+
+    def list_webhook_subscriptions(self, org_id: Optional[str] = None) -> List["WebhookSubscription"]:
+        if self._backend is not None:
+            return self._backend.list_webhook_subscriptions(org_id)
+        subs = list(self._webhook_subscriptions.values())
+        if org_id:
+            subs = [sub for sub in subs if sub.org_id == org_id]
+        return subs
+
+    def delete_webhook_subscription(self, subscription_id: str) -> bool:
+        if self._backend is not None:
+            return self._backend.delete_webhook_subscription(subscription_id)
+        return self._webhook_subscriptions.pop(subscription_id, None) is not None
+
+    def set_secret_rotation_policy(
+        self,
+        org_id: str,
+        secret_id: str,
+        rotation_days: int,
+        last_rotated_at: Optional[str] = None,
+    ) -> SecretRotationPolicy:
+        policy = SecretRotationPolicy(
+            secret_id=secret_id,
+            org_id=org_id,
+            rotation_days=rotation_days,
+            last_rotated_at=last_rotated_at,
+        )
+        if self._backend is not None:
+            return self._backend.set_secret_rotation_policy(policy)
+        self._secret_rotation[secret_id] = policy
+        return policy
+
+    def list_secret_rotation_policies(self, org_id: Optional[str] = None) -> List[SecretRotationPolicy]:
+        if self._backend is not None:
+            return self._backend.list_secret_rotation_policies(org_id)
+        policies = list(self._secret_rotation.values())
+        if org_id:
+            policies = [policy for policy in policies if policy.org_id == org_id]
+        return policies
 
     def resolve_model(self, org_id: str, requested: Optional[str]) -> Optional[str]:
         policy = self._model_policies.get(org_id)

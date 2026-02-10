@@ -201,6 +201,7 @@ def create_audit_loggers(
     hash_chain: Optional[AuditHashChain] = None,
     http_endpoint: Optional[str] = None,
     http_timeout_seconds: float = 5.0,
+    extra_exporters: Optional[List[AuditLogExporter]] = None,
 ) -> AuditLogger:
     exporters: List[AuditLogExporter] = []
     if path:
@@ -209,4 +210,6 @@ def create_audit_loggers(
         exporters.append(StdoutAuditExporter())
     if http_endpoint:
         exporters.append(HttpAuditExporter(url=http_endpoint, timeout_seconds=http_timeout_seconds))
+    if extra_exporters:
+        exporters.extend(extra_exporters)
     return AuditLogger(exporters=exporters, redactor=redactor, hash_chain=hash_chain)

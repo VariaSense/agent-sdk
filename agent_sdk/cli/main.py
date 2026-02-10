@@ -1,5 +1,5 @@
 import typer
-from agent_sdk.cli.commands import run_cmd, tools_cmd, agents_cmd, init_cmd, serve_cmd, doctor_cmd, backup_cmd, registry_cmd
+from agent_sdk.cli.commands import run_cmd, tools_cmd, agents_cmd, init_cmd, serve_cmd, doctor_cmd, backup_cmd, registry_cmd, compliance_cmd
 from agent_sdk import docs as docs_module
 
 app = typer.Typer(help="Agent SDK CLI")
@@ -12,6 +12,7 @@ app.add_typer(serve_cmd, name="server")
 app.add_typer(doctor_cmd, name="doctor")
 app.add_typer(backup_cmd, name="backup")
 app.add_typer(registry_cmd, name="registry")
+app.add_typer(compliance_cmd, name="compliance-report")
 
 
 @app.command()

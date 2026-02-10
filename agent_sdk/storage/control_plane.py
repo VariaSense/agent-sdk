@@ -9,13 +9,16 @@ from typing import List, Optional
 
 from agent_sdk.server.multi_tenant import (
     Organization,
+    Project,
     User,
     APIKeyRecord,
     QuotaLimits,
     RetentionPolicyConfig,
     ModelPolicy,
     BackupRecord,
+    SecretRotationPolicy,
 )
+from agent_sdk.webhooks import WebhookSubscription
 from agent_sdk.policy.types import PolicyAssignment, PolicyBundle
 
 try:
@@ -32,6 +35,15 @@ class ControlPlaneBackend:
         raise NotImplementedError
 
     def list_orgs(self) -> List[Organization]:
+        raise NotImplementedError
+
+    def create_project(self, project: Project) -> Project:
+        raise NotImplementedError
+
+    def list_projects(self, org_id: Optional[str] = None) -> List[Project]:
+        raise NotImplementedError
+
+    def get_project(self, project_id: str) -> Optional[Project]:
         raise NotImplementedError
 
     def create_user(self, org_id: str, user: User) -> User:
@@ -109,6 +121,21 @@ class ControlPlaneBackend:
     def get_backup_record(self, backup_id: str) -> Optional[BackupRecord]:
         raise NotImplementedError
 
+    def create_webhook_subscription(self, subscription: WebhookSubscription) -> WebhookSubscription:
+        raise NotImplementedError
+
+    def list_webhook_subscriptions(self, org_id: Optional[str] = None) -> List[WebhookSubscription]:
+        raise NotImplementedError
+
+    def delete_webhook_subscription(self, subscription_id: str) -> bool:
+        raise NotImplementedError
+
+    def set_secret_rotation_policy(self, policy: SecretRotationPolicy) -> SecretRotationPolicy:
+        raise NotImplementedError
+
+    def list_secret_rotation_policies(self, org_id: Optional[str] = None) -> List[SecretRotationPolicy]:
+        raise NotImplementedError
+
 
 class SQLiteControlPlane(ControlPlaneBackend):
     def __init__(self, path: str):
@@ -153,9 +180,21 @@ class SQLiteControlPlane(ControlPlaneBackend):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS projects (
+                    project_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    name TEXT,
+                    created_at TEXT,
+                    tags_json TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS api_keys (
                     key_id TEXT PRIMARY KEY,
                     org_id TEXT,
+                    project_id TEXT,
                     key TEXT,
                     label TEXT,
                     role TEXT,
@@ -195,10 +234,37 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+                    subscription_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    url TEXT,
+                    event_types_json TEXT,
+                    secret TEXT,
+                    created_at TEXT,
+                    active INTEGER,
+                    max_attempts INTEGER,
+                    backoff_seconds REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS secret_rotation_policies (
+                    secret_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    rotation_days INTEGER,
+                    last_rotated_at TEXT,
+                    created_at TEXT
+                )
+                """
+            )
             self._ensure_column(conn, "api_keys", "expires_at", "TEXT")
             self._ensure_column(conn, "api_keys", "rotated_at", "TEXT")
             self._ensure_column(conn, "api_keys", "rate_limit_per_minute", "INTEGER")
             self._ensure_column(conn, "api_keys", "ip_allowlist_json", "TEXT")
+            self._ensure_column(conn, "api_keys", "project_id", "TEXT")
             self._ensure_column(conn, "orgs", "retention_json", "TEXT")
             self._ensure_column(conn, "users", "active", "INTEGER")
             self._ensure_column(conn, "users", "is_service_account", "INTEGER")
@@ -284,6 +350,57 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 for row in rows
             ]
 
+    def create_project(self, project: Project) -> Project:
+        self.ensure_org(project.org_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (project_id, org_id, name, created_at, tags_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    project.project_id,
+                    project.org_id,
+                    project.name,
+                    project.created_at,
+                    json.dumps(project.tags),
+                ),
+            )
+        return project
+
+    def list_projects(self, org_id: Optional[str] = None) -> List[Project]:
+        with self._connect() as conn:
+            if org_id:
+                rows = conn.execute("SELECT * FROM projects WHERE org_id = ?", (org_id,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM projects").fetchall()
+            return [
+                Project(
+                    project_id=row["project_id"],
+                    org_id=row["org_id"],
+                    name=row["name"],
+                    created_at=row["created_at"],
+                    tags=json.loads(row["tags_json"] or "{}"),
+                )
+                for row in rows
+            ]
+
+    def get_project(self, project_id: str) -> Optional[Project]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return Project(
+                project_id=row["project_id"],
+                org_id=row["org_id"],
+                name=row["name"],
+                created_at=row["created_at"],
+                tags=json.loads(row["tags_json"] or "{}"),
+            )
+
     def create_user(self, org_id: str, user: User) -> User:
         self.ensure_org(org_id)
         with self._connect() as conn:
@@ -336,12 +453,16 @@ class SQLiteControlPlane(ControlPlaneBackend):
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO api_keys (key_id, org_id, key, label, role, scopes_json, created_at, active, expires_at, rotated_at, rate_limit_per_minute, ip_allowlist_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO api_keys (
+                    key_id, org_id, project_id, key, label, role, scopes_json,
+                    created_at, active, expires_at, rotated_at, rate_limit_per_minute, ip_allowlist_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.key_id,
                     record.org_id,
+                    record.project_id,
                     record.key,
                     record.label,
                     record.role,
@@ -368,6 +489,7 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     APIKeyRecord(
                         key_id=row["key_id"],
                         org_id=row["org_id"],
+                        project_id=row["project_id"],
                         key=row["key"],
                         label=row["label"],
                         role=row["role"] or "developer",
@@ -672,6 +794,99 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 metadata=json.loads(row["metadata_json"] or "{}"),
             )
 
+    def create_webhook_subscription(self, subscription: WebhookSubscription) -> WebhookSubscription:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO webhook_subscriptions (
+                    subscription_id, org_id, url, event_types_json, secret, created_at,
+                    active, max_attempts, backoff_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    subscription.subscription_id,
+                    subscription.org_id,
+                    subscription.url,
+                    json.dumps(subscription.event_types),
+                    subscription.secret,
+                    subscription.created_at,
+                    1 if subscription.active else 0,
+                    subscription.max_attempts,
+                    subscription.backoff_seconds,
+                ),
+            )
+        return subscription
+
+    def list_webhook_subscriptions(self, org_id: Optional[str] = None) -> List[WebhookSubscription]:
+        with self._connect() as conn:
+            if org_id:
+                rows = conn.execute(
+                    "SELECT * FROM webhook_subscriptions WHERE org_id = ?",
+                    (org_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM webhook_subscriptions").fetchall()
+            return [
+                WebhookSubscription(
+                    subscription_id=row["subscription_id"],
+                    org_id=row["org_id"],
+                    url=row["url"],
+                    event_types=json.loads(row["event_types_json"] or "[]"),
+                    secret=row["secret"],
+                    created_at=row["created_at"],
+                    active=bool(row["active"]),
+                    max_attempts=row["max_attempts"] or 3,
+                    backoff_seconds=row["backoff_seconds"] or 1.0,
+                )
+                for row in rows
+            ]
+
+    def delete_webhook_subscription(self, subscription_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM webhook_subscriptions WHERE subscription_id = ?",
+                (subscription_id,),
+            )
+            return cur.rowcount > 0
+
+    def set_secret_rotation_policy(self, policy: SecretRotationPolicy) -> SecretRotationPolicy:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO secret_rotation_policies (
+                    secret_id, org_id, rotation_days, last_rotated_at, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    policy.secret_id,
+                    policy.org_id,
+                    policy.rotation_days,
+                    policy.last_rotated_at,
+                    policy.created_at,
+                ),
+            )
+        return policy
+
+    def list_secret_rotation_policies(self, org_id: Optional[str] = None) -> List[SecretRotationPolicy]:
+        with self._connect() as conn:
+            if org_id:
+                rows = conn.execute(
+                    "SELECT * FROM secret_rotation_policies WHERE org_id = ?",
+                    (org_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM secret_rotation_policies").fetchall()
+            return [
+                SecretRotationPolicy(
+                    secret_id=row["secret_id"],
+                    org_id=row["org_id"],
+                    rotation_days=row["rotation_days"],
+                    last_rotated_at=row["last_rotated_at"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
 
 class PostgresControlPlane(ControlPlaneBackend):
     def __init__(self, dsn: str, initialize_schema: bool = True):
@@ -715,9 +930,21 @@ class PostgresControlPlane(ControlPlaneBackend):
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS projects (
+                    project_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    name TEXT,
+                    created_at TEXT,
+                    tags_json JSONB
+                );
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS api_keys (
                     key_id TEXT PRIMARY KEY,
                     org_id TEXT,
+                    project_id TEXT,
                     key TEXT,
                     label TEXT,
                     role TEXT,
@@ -754,6 +981,32 @@ class PostgresControlPlane(ControlPlaneBackend):
                     control_plane_backend TEXT,
                     control_plane_path TEXT,
                     metadata_json JSONB
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+                    subscription_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    url TEXT,
+                    event_types_json JSONB,
+                    secret TEXT,
+                    created_at TEXT,
+                    active BOOLEAN,
+                    max_attempts INTEGER,
+                    backoff_seconds REAL
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS secret_rotation_policies (
+                    secret_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    rotation_days INTEGER,
+                    last_rotated_at TEXT,
+                    created_at TEXT
                 );
                 """
             )
@@ -830,6 +1083,57 @@ class PostgresControlPlane(ControlPlaneBackend):
                 for row in rows
             ]
 
+    def create_project(self, project: Project) -> Project:
+        self.ensure_org(project.org_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO projects (project_id, org_id, name, created_at, tags_json)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    project.project_id,
+                    project.org_id,
+                    project.name,
+                    project.created_at,
+                    json.dumps(project.tags),
+                ),
+            )
+        self._conn.commit()
+        return project
+
+    def list_projects(self, org_id: Optional[str] = None) -> List[Project]:
+        with self._conn.cursor() as cur:
+            if org_id:
+                cur.execute("SELECT * FROM projects WHERE org_id = %s", (org_id,))
+            else:
+                cur.execute("SELECT * FROM projects")
+            rows = cur.fetchall()
+            return [
+                Project(
+                    project_id=row[0],
+                    org_id=row[1],
+                    name=row[2],
+                    created_at=row[3],
+                    tags=row[4] or {},
+                )
+                for row in rows
+            ]
+
+    def get_project(self, project_id: str) -> Optional[Project]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM projects WHERE project_id = %s", (project_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return Project(
+                project_id=row[0],
+                org_id=row[1],
+                name=row[2],
+                created_at=row[3],
+                tags=row[4] or {},
+            )
+
     def create_user(self, org_id: str, user: User) -> User:
         self.ensure_org(org_id)
         with self._conn.cursor() as cur:
@@ -885,12 +1189,16 @@ class PostgresControlPlane(ControlPlaneBackend):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO api_keys (key_id, org_id, key, label, role, scopes_json, created_at, active, expires_at, rotated_at, rate_limit_per_minute, ip_allowlist_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO api_keys (
+                    key_id, org_id, project_id, key, label, role, scopes_json,
+                    created_at, active, expires_at, rotated_at, rate_limit_per_minute, ip_allowlist_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     record.key_id,
                     record.org_id,
+                    record.project_id,
                     record.key,
                     record.label,
                     record.role,
@@ -920,16 +1228,17 @@ class PostgresControlPlane(ControlPlaneBackend):
                     APIKeyRecord(
                         key_id=row[0],
                         org_id=row[1],
-                        key=row[2],
-                        label=row[3],
-                        role=row[4] or "developer",
-                        scopes=json.loads(row[5] or "[]"),
-                        created_at=row[6],
-                        active=bool(row[7]),
-                        expires_at=row[8],
-                        rotated_at=row[9],
-                        rate_limit_per_minute=row[10],
-                        ip_allowlist=json.loads(row[11] or "[]"),
+                        project_id=row[2],
+                        key=row[3],
+                        label=row[4],
+                        role=row[5] or "developer",
+                        scopes=json.loads(row[6] or "[]"),
+                        created_at=row[7],
+                        active=bool(row[8]),
+                        expires_at=row[9],
+                        rotated_at=row[10],
+                        rate_limit_per_minute=row[11],
+                        ip_allowlist=json.loads(row[12] or "[]"),
                     )
                 )
             return records
@@ -1236,3 +1545,103 @@ class PostgresControlPlane(ControlPlaneBackend):
                 control_plane_path=row[6],
                 metadata=row[7] or {},
             )
+
+    def create_webhook_subscription(self, subscription: WebhookSubscription) -> WebhookSubscription:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO webhook_subscriptions (
+                    subscription_id, org_id, url, event_types_json, secret, created_at,
+                    active, max_attempts, backoff_seconds
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    subscription.subscription_id,
+                    subscription.org_id,
+                    subscription.url,
+                    json.dumps(subscription.event_types),
+                    subscription.secret,
+                    subscription.created_at,
+                    subscription.active,
+                    subscription.max_attempts,
+                    subscription.backoff_seconds,
+                ),
+            )
+        self._conn.commit()
+        return subscription
+
+    def list_webhook_subscriptions(self, org_id: Optional[str] = None) -> List[WebhookSubscription]:
+        with self._conn.cursor() as cur:
+            if org_id:
+                cur.execute("SELECT * FROM webhook_subscriptions WHERE org_id = %s", (org_id,))
+            else:
+                cur.execute("SELECT * FROM webhook_subscriptions")
+            rows = cur.fetchall()
+            return [
+                WebhookSubscription(
+                    subscription_id=row[0],
+                    org_id=row[1],
+                    url=row[2],
+                    event_types=row[3] or [],
+                    secret=row[4],
+                    created_at=row[5],
+                    active=bool(row[6]),
+                    max_attempts=row[7] or 3,
+                    backoff_seconds=row[8] or 1.0,
+                )
+                for row in rows
+            ]
+
+    def delete_webhook_subscription(self, subscription_id: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM webhook_subscriptions WHERE subscription_id = %s",
+                (subscription_id,),
+            )
+            removed = cur.rowcount > 0
+        self._conn.commit()
+        return removed
+
+    def set_secret_rotation_policy(self, policy: SecretRotationPolicy) -> SecretRotationPolicy:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO secret_rotation_policies (
+                    secret_id, org_id, rotation_days, last_rotated_at, created_at
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (secret_id)
+                DO UPDATE SET org_id = EXCLUDED.org_id,
+                    rotation_days = EXCLUDED.rotation_days,
+                    last_rotated_at = EXCLUDED.last_rotated_at
+                """,
+                (
+                    policy.secret_id,
+                    policy.org_id,
+                    policy.rotation_days,
+                    policy.last_rotated_at,
+                    policy.created_at,
+                ),
+            )
+        self._conn.commit()
+        return policy
+
+    def list_secret_rotation_policies(self, org_id: Optional[str] = None) -> List[SecretRotationPolicy]:
+        with self._conn.cursor() as cur:
+            if org_id:
+                cur.execute(
+                    "SELECT * FROM secret_rotation_policies WHERE org_id = %s",
+                    (org_id,),
+                )
+            else:
+                cur.execute("SELECT * FROM secret_rotation_policies")
+            rows = cur.fetchall()
+            return [
+                SecretRotationPolicy(
+                    secret_id=row[0],
+                    org_id=row[1],
+                    rotation_days=row[2],
+                    last_rotated_at=row[3],
+                    created_at=row[4],
+                )
+                for row in rows
+            ]
