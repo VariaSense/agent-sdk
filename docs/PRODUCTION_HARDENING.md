@@ -22,6 +22,8 @@ This guide documents the production-grade features added in Phase 4 and how to e
 
 ## Governance and Compliance
 - Audit logging: `AGENT_SDK_AUDIT_LOG_PATH`, `AGENT_SDK_AUDIT_LOG_STDOUT`.
+- Audit hash chaining: `AGENT_SDK_AUDIT_HASH_CHAIN=true` (tamper-evident logs).
+- Audit export: `/admin/audit-logs/export?format=jsonl|csv`.
 - Data deletion endpoints: `/admin/runs/{id}`, `/admin/sessions/{id}`.
 - PII redaction: `AGENT_SDK_PII_REDACTION_ENABLED=true`.
 - Data residency: set org residency via `/admin/residency` and enforce with `AGENT_SDK_DATA_REGION`.
@@ -30,6 +32,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Model Management and Quotas
 - Per-tenant model policies via `/admin/model-policies`.
 - Quotas via `/admin/quotas` (runs/sessions/tokens).
+- Usage export: `/admin/usage/export?group_by=org_id,project` (CSV/JSON).
 
 ## Reliability
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
@@ -38,6 +41,8 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - SQS queue backend: `AGENT_SDK_QUEUE_BACKEND=sqs`, `AGENT_SDK_SQS_QUEUE_URL=...`.
 - Kafka queue backend: `AGENT_SDK_QUEUE_BACKEND=kafka`, `AGENT_SDK_KAFKA_TOPIC=agent-sdk-jobs`.
 - Retry policy: `AGENT_SDK_RETRY_MAX`, `AGENT_SDK_RETRY_BASE_DELAY`, `AGENT_SDK_RETRY_MAX_DELAY`.
+- Tool reliability policies: `AGENT_SDK_RELIABILITY_ENABLED=true`, `AGENT_SDK_TOOL_RETRY_MAX`, `AGENT_SDK_TOOL_CIRCUIT_FAILURE_THRESHOLD`.
+- Replay mode: `AGENT_SDK_REPLAY_MODE=true`, optional `AGENT_SDK_REPLAY_PATH` for cached tool outputs.
 - Backpressure: `AGENT_SDK_STREAM_QUEUE_SIZE`, `AGENT_SDK_STREAM_MAX_EVENTS`.
 - Idempotency for run creation: `Idempotency-Key` header.
 - Scheduled runs via `/admin/schedules` with cron expressions.
@@ -56,9 +61,10 @@ This guide documents the production-grade features added in Phase 4 and how to e
 
 ## Tool Packs
 - Signed manifests: `AGENT_SDK_TOOL_MANIFEST_SECRET`.
+- Local registry CLI: `agent-sdk registry publish|list|pull`.
 
 ## Operations Checklist
-1. Configure storage and backups.
+1. Configure storage and backups (see `docs/BACKUP_RECOVERY.md`).
 2. Set audit logs and redaction policies.
 3. Define quotas and model policies per org.
 4. Run migrations before deploying new versions.

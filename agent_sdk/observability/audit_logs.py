@@ -9,6 +9,8 @@ import os
 import threading
 import sys
 from datetime import datetime, timezone
+import hashlib
+from urllib import request as urlrequest
 
 from agent_sdk.observability.redaction import Redactor
 
@@ -26,6 +28,8 @@ class AuditLogEntry:
     target_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now_iso)
+    prev_hash: Optional[str] = None
+    hash: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         payload = {
@@ -39,10 +43,74 @@ class AuditLogEntry:
             payload["target_id"] = self.target_id
         if self.metadata:
             payload["metadata"] = self.metadata
+        if self.prev_hash:
+            payload["prev_hash"] = self.prev_hash
+        if self.hash:
+            payload["hash"] = self.hash
         return payload
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), default=str)
+
+    def to_hash_payload(self, prev_hash: Optional[str]) -> Dict[str, Any]:
+        payload = self.to_dict()
+        payload.pop("hash", None)
+        if prev_hash:
+            payload["prev_hash"] = prev_hash
+        else:
+            payload.pop("prev_hash", None)
+        return payload
+
+
+class AuditHashChain:
+    def __init__(self, seed: Optional[str] = None) -> None:
+        self._last_hash = seed
+
+    @property
+    def last_hash(self) -> Optional[str]:
+        return self._last_hash
+
+    def apply(self, entry: AuditLogEntry) -> AuditLogEntry:
+        prev_hash = self._last_hash
+        payload = entry.to_hash_payload(prev_hash)
+        payload_json = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        digest = hashlib.sha256(payload_json).hexdigest()
+        self._last_hash = digest
+        return AuditLogEntry(
+            action=entry.action,
+            actor=entry.actor,
+            org_id=entry.org_id,
+            target_type=entry.target_type,
+            target_id=entry.target_id,
+            metadata=entry.metadata,
+            timestamp=entry.timestamp,
+            prev_hash=prev_hash,
+            hash=digest,
+        )
+
+    @staticmethod
+    def load_last_hash(path: str) -> Optional[str]:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    return None
+                pos = handle.tell() - 1
+                while pos > 0:
+                    handle.seek(pos)
+                    if handle.read(1) == b"\n":
+                        break
+                    pos -= 1
+                handle.seek(pos + 1)
+                last_line = handle.readline().decode("utf-8").strip()
+            if not last_line:
+                return None
+            payload = json.loads(last_line)
+            return payload.get("hash")
+        except Exception:
+            return None
 
 
 class AuditLogExporter:
@@ -76,14 +144,35 @@ class StdoutAuditExporter(AuditLogExporter):
             self._stream.write(line + "\n")
 
 
+class HttpAuditExporter(AuditLogExporter):
+    def __init__(self, url: str, timeout_seconds: float = 5.0) -> None:
+        self._url = url
+        self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+
+    def emit(self, entry: AuditLogEntry) -> None:
+        payload = entry.to_json().encode("utf-8")
+        req = urlrequest.Request(
+            self._url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self._lock:
+            with urlrequest.urlopen(req, timeout=self._timeout):
+                pass
+
+
 class AuditLogger:
     def __init__(
         self,
         exporters: Optional[List[AuditLogExporter]] = None,
         redactor: Optional["Redactor"] = None,
+        hash_chain: Optional[AuditHashChain] = None,
     ) -> None:
         self._exporters = exporters or []
         self._redactor = redactor
+        self._hash_chain = hash_chain
 
     def emit(self, entry: AuditLogEntry) -> None:
         if self._redactor and self._redactor.enabled and entry.metadata:
@@ -96,6 +185,8 @@ class AuditLogger:
                 metadata=self._redactor.redact_metadata(entry.metadata),
                 timestamp=entry.timestamp,
             )
+        if self._hash_chain:
+            entry = self._hash_chain.apply(entry)
         for exporter in self._exporters:
             try:
                 exporter.emit(entry)
@@ -107,10 +198,15 @@ def create_audit_loggers(
     path: Optional[str] = None,
     emit_stdout: bool = False,
     redactor: Optional["Redactor"] = None,
+    hash_chain: Optional[AuditHashChain] = None,
+    http_endpoint: Optional[str] = None,
+    http_timeout_seconds: float = 5.0,
 ) -> AuditLogger:
     exporters: List[AuditLogExporter] = []
     if path:
         exporters.append(JSONLAuditExporter(path=path))
     if emit_stdout:
         exporters.append(StdoutAuditExporter())
-    return AuditLogger(exporters=exporters, redactor=redactor)
+    if http_endpoint:
+        exporters.append(HttpAuditExporter(url=http_endpoint, timeout_seconds=http_timeout_seconds))
+    return AuditLogger(exporters=exporters, redactor=redactor, hash_chain=hash_chain)

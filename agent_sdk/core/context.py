@@ -22,17 +22,25 @@ class AgentContext:
     rate_limiter: Optional[RateLimiter] = None
     session_id: Optional[str] = None
     run_id: Optional[str] = None
+    org_id: Optional[str] = None
     
     # Memory management settings
     max_short_term: int = DEFAULT_MAX_SHORT_TERM_MESSAGES
     max_long_term: int = DEFAULT_MAX_LONG_TERM_MESSAGES
 
-    def set_run_context(self, session_id: Optional[str], run_id: Optional[str]) -> None:
+    def set_run_context(
+        self,
+        session_id: Optional[str],
+        run_id: Optional[str],
+        org_id: Optional[str] = None,
+    ) -> None:
         """Set run/session identifiers for this context."""
         if session_id is not None:
             self.session_id = session_id
         if run_id is not None:
             self.run_id = run_id
+        if org_id is not None:
+            self.org_id = org_id
 
     def apply_run_metadata(self, message: Message) -> None:
         """Attach run/session identifiers to a message if available."""

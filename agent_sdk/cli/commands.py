@@ -2,6 +2,11 @@ import asyncio
 import os
 import typer
 import yaml
+import shutil
+import json
+import subprocess
+from datetime import datetime, timezone
+import secrets
 
 from agent_sdk.config.loader import load_config
 from agent_sdk.core.runtime import PlannerExecutorRuntime
@@ -9,6 +14,10 @@ from agent_sdk.llm.mock import MockLLMClient
 from agent_sdk.core.tools import GLOBAL_TOOL_REGISTRY
 from agent_sdk.plugins.loader import PluginLoader
 from agent_sdk.presets.runtime import build_runtime_from_preset
+from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlPlane
+from agent_sdk.server.multi_tenant import BackupRecord
+from agent_sdk.registry.local import LocalRegistry
+from agent_sdk.tool_packs.manifest import ToolManifest, sign_manifest, default_manifest_secret
 
 run_cmd = typer.Typer(help="Run tasks using the agent runtime")
 tools_cmd = typer.Typer(help="Inspect tools")
@@ -16,6 +25,8 @@ agents_cmd = typer.Typer(help="Inspect agents")
 init_cmd = typer.Typer(help="Project scaffolding")
 serve_cmd = typer.Typer(help="Serve agents over HTTP")
 doctor_cmd = typer.Typer(help="Diagnostics and health checks")
+backup_cmd = typer.Typer(help="Backup and restore storage/control plane data")
+registry_cmd = typer.Typer(help="Tool pack registry operations")
 
 
 def collect_doctor_checks(config: str) -> list[dict]:
@@ -70,6 +81,161 @@ def collect_doctor_checks(config: str) -> list[dict]:
         checks.append({"name": "logs.run_log_path", "status": "warn", "detail": "AGENT_SDK_RUN_LOG_PATH not set"})
 
     return checks
+
+
+def _load_control_plane_backend():
+    backend = os.getenv("AGENT_SDK_CONTROL_PLANE_BACKEND", "sqlite").lower()
+    if backend == "postgres":
+        dsn = os.getenv("AGENT_SDK_CONTROL_PLANE_DSN") or os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_CONTROL_PLANE_DSN is required for postgres control plane")
+        return PostgresControlPlane(dsn)
+    if backend == "sqlite":
+        path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
+        return SQLiteControlPlane(path)
+    raise typer.BadParameter(f"Unsupported control plane backend: {backend}")
+
+
+def _require_pg_command(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise typer.BadParameter(f"{name} is required on PATH for Postgres backups")
+    return path
+
+
+@backup_cmd.command("list")
+def list_backups():
+    """List backup records from the control plane."""
+    backend = _load_control_plane_backend()
+    records = backend.list_backup_records()
+    for record in records:
+        typer.echo(f"{record.backup_id}\t{record.created_at}\t{record.label or ''}")
+
+
+@backup_cmd.command("create")
+def create_backup(
+    output_dir: str = "backups",
+    label: str = "",
+    dry_run: bool = False,
+):
+    """Create a backup for storage and control plane data."""
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_id = f"backup_{secrets.token_hex(4)}"
+
+    storage_backend = os.getenv("AGENT_SDK_STORAGE_BACKEND", "sqlite").lower()
+    storage_path = os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
+    control_plane_backend = os.getenv("AGENT_SDK_CONTROL_PLANE_BACKEND", "sqlite").lower()
+    control_plane_path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
+
+    metadata = {"timestamp": timestamp}
+    storage_backup_path = None
+    control_plane_backup_path = None
+
+    if storage_backend == "sqlite":
+        storage_backup_path = os.path.join(output_dir, f"{backup_id}_storage.sqlite")
+        if not dry_run:
+            shutil.copy2(storage_path, storage_backup_path)
+    elif storage_backend == "postgres":
+        pg_dump = _require_pg_command("pg_dump")
+        storage_backup_path = os.path.join(output_dir, f"{backup_id}_storage.sql")
+        dsn = os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_POSTGRES_DSN is required for postgres storage")
+        if not dry_run:
+            subprocess.run([pg_dump, "--dbname", dsn, "--file", storage_backup_path], check=True)
+    else:
+        raise typer.BadParameter(f"Unsupported storage backend: {storage_backend}")
+
+    if control_plane_backend == "sqlite":
+        control_plane_backup_path = os.path.join(output_dir, f"{backup_id}_control_plane.sqlite")
+        if not dry_run:
+            shutil.copy2(control_plane_path, control_plane_backup_path)
+    elif control_plane_backend == "postgres":
+        pg_dump = _require_pg_command("pg_dump")
+        control_plane_backup_path = os.path.join(output_dir, f"{backup_id}_control_plane.sql")
+        dsn = os.getenv("AGENT_SDK_CONTROL_PLANE_DSN") or os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_CONTROL_PLANE_DSN is required for postgres control plane")
+        if not dry_run:
+            subprocess.run([pg_dump, "--dbname", dsn, "--file", control_plane_backup_path], check=True)
+    else:
+        raise typer.BadParameter(f"Unsupported control plane backend: {control_plane_backend}")
+
+    record = BackupRecord(
+        backup_id=backup_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        label=label or None,
+        storage_backend=storage_backend,
+        storage_path=storage_backup_path,
+        control_plane_backend=control_plane_backend,
+        control_plane_path=control_plane_backup_path,
+        metadata=metadata,
+    )
+    backend = _load_control_plane_backend()
+    if not dry_run:
+        backend.create_backup_record(record)
+    typer.echo(json.dumps(record.__dict__, default=str))
+
+
+@backup_cmd.command("restore")
+def restore_backup(
+    backup_id: str,
+    dry_run: bool = False,
+):
+    """Restore from a backup record."""
+    backend = _load_control_plane_backend()
+    record = backend.get_backup_record(backup_id)
+    if not record:
+        raise typer.BadParameter(f"Backup {backup_id} not found")
+
+    storage_backend = os.getenv("AGENT_SDK_STORAGE_BACKEND", "sqlite").lower()
+    control_plane_backend = os.getenv("AGENT_SDK_CONTROL_PLANE_BACKEND", "sqlite").lower()
+    storage_path = os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
+    control_plane_path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
+
+    if record.storage_backend != storage_backend:
+        raise typer.BadParameter("Storage backend mismatch for restore")
+    if record.control_plane_backend != control_plane_backend:
+        raise typer.BadParameter("Control plane backend mismatch for restore")
+
+    if storage_backend == "sqlite":
+        if not record.storage_path:
+            raise typer.BadParameter("No storage backup path recorded")
+        if not dry_run:
+            shutil.copy2(record.storage_path, storage_path)
+    elif storage_backend == "postgres":
+        psql = _require_pg_command("psql")
+        dsn = os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_POSTGRES_DSN is required for postgres restore")
+        if not record.storage_path:
+            raise typer.BadParameter("No storage backup path recorded")
+        if not dry_run:
+            subprocess.run(
+                [psql, "--set", "ON_ERROR_STOP=on", "--dbname", dsn, "--file", record.storage_path],
+                check=True,
+            )
+
+    if control_plane_backend == "sqlite":
+        if not record.control_plane_path:
+            raise typer.BadParameter("No control plane backup path recorded")
+        if not dry_run:
+            shutil.copy2(record.control_plane_path, control_plane_path)
+    elif control_plane_backend == "postgres":
+        psql = _require_pg_command("psql")
+        dsn = os.getenv("AGENT_SDK_CONTROL_PLANE_DSN") or os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_CONTROL_PLANE_DSN is required for postgres restore")
+        if not record.control_plane_path:
+            raise typer.BadParameter("No control plane backup path recorded")
+        if not dry_run:
+            subprocess.run(
+                [psql, "--set", "ON_ERROR_STOP=on", "--dbname", dsn, "--file", record.control_plane_path],
+                check=True,
+            )
+
+    typer.echo(f"Restore {'validated' if dry_run else 'completed'} for {backup_id}")
 
 @run_cmd.command("task")
 def run_task(task: str, config: str = "config.yaml", preset: str = ""):
@@ -188,3 +354,44 @@ def doctor_check(config: str = "config.yaml"):
     for check in checks:
         status = check["status"].upper()
         typer.echo(f"[{status}] {check['name']}: {check['detail']}")
+
+
+@registry_cmd.command("list")
+def registry_list(name: str = "", root: str = "tool_registry"):
+    registry = LocalRegistry(root=root)
+    manifests = registry.list_manifests(name or None)
+    for manifest in manifests:
+        typer.echo(f"{manifest.name}@{manifest.version}")
+
+
+@registry_cmd.command("publish")
+def registry_publish(
+    name: str,
+    version: str,
+    tools: str,
+    root: str = "tool_registry",
+    metadata: str = "{}",
+):
+    registry = LocalRegistry(root=root)
+    try:
+        meta = json.loads(metadata)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter("metadata must be valid JSON") from exc
+    manifest = ToolManifest(
+        name=name,
+        version=version,
+        tools=[t.strip() for t in tools.split(",") if t.strip()],
+        metadata=meta,
+    )
+    secret = default_manifest_secret()
+    if secret:
+        manifest = sign_manifest(manifest, secret)
+    registry.publish(manifest)
+    typer.echo(json.dumps(manifest.to_dict(), indent=2))
+
+
+@registry_cmd.command("pull")
+def registry_pull(name: str, version: str = "", root: str = "tool_registry"):
+    registry = LocalRegistry(root=root)
+    manifest = registry.pull(name, version or None)
+    typer.echo(json.dumps(manifest.to_dict(), indent=2))

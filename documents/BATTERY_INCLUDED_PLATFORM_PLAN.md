@@ -10,6 +10,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 4: Production hardening complete.
 - Phase 5: Production-grade platform maturity complete.
 - Phase 6: Enterprise readiness & ops scale complete.
+- Phase 7: Enterprise IAM, compliance, and ecosystem complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -792,4 +793,94 @@ Estimate: 1 week.
 Estimate: 3-5 days.
 
 10. Tool sandbox interface + hierarchical orchestration with cancellation. **(Completed)**  
+Estimate: 2-3 weeks.
+
+---
+
+## Phase 8: Governance, DR, and Ecosystem Maturity (optional, 12-20 weeks)
+
+### Objective
+Close remaining production gaps around governance policy, data export/backup, audit integrity, and ecosystem distribution so enterprise adopters can operate and certify the platform without bespoke glue.
+
+### 8.1 Policy & Governance Engine
+- Policy interface for tools, data egress, model routing, and cost ceilings.
+- Policy bundles/versioning with per-tenant overrides.
+- Mockable policy evaluator for tests.
+
+Deliverables:
+- `agent_sdk/policy` interfaces + default in-process policy engine.
+- Admin APIs for policy bundles and assignment.
+
+### 8.2 Audit Integrity & Export
+- Tamper-evident audit log chain (hash chaining).
+- Audit log export endpoint (JSONL/CSV).
+- Pluggable audit sinks (file/http) with mocks.
+
+Deliverables:
+- Audit log sink interfaces + hash chain utility.
+- Admin API for export + retention settings.
+
+### 8.3 Backup/Restore and DR
+- Backup/restore CLI for control plane + run store (SQLite/Postgres).
+- Backup metadata registry in control plane.
+- Restore validation and dry-run mode.
+
+Deliverables:
+- `agent-sdk backup` / `agent-sdk restore` CLI commands.
+- Docs: backup + recovery runbook.
+
+### 8.4 Usage & Billing Export
+- Usage aggregation per org/project/service account.
+- Export to CSV/JSON and webhook sink.
+- Cost allocation tags (project, environment, cost center).
+
+Deliverables:
+- Usage aggregation API + export endpoints.
+- Docs: billing export and cost allocation.
+
+### 8.5 Tool Pack Registry & Distribution
+- Registry interface (list/publish/pull) with signatures.
+- Local registry implementation and mock client.
+
+Deliverables:
+- `agent_sdk/registry` interfaces + local registry backend.
+- CLI for publishing and pulling tool packs.
+
+### 8.6 Reliability Guardrails
+- Circuit breaker + retry policy interface for providers/tools.
+- Provider fallback policy (multi-provider failover).
+- Deterministic replay mode for debugging.
+
+Deliverables:
+- `agent_sdk/reliability` policy interfaces + default implementation.
+- Tests for retry/fallback/replay behavior.
+
+### Exit Criteria
+- Policy engine enforces tool/data/model rules with tests and mocks.
+- Audit logs are tamper-evident and exportable.
+- Backup/restore works for SQLite/Postgres and documented.
+- Usage export endpoints validated with cost allocation tags.
+- Tool pack registry publish/pull tested locally.
+- Retry/fallback/replay behavior validated.
+
+---
+
+## Phase 8 Backlog (Prioritized, Rough Estimates)
+
+1. Policy interface + default evaluator + admin APIs. **(Completed)**  
+Estimate: 2-3 weeks.
+
+2. Audit hash chaining + export endpoints + sink interfaces. **(Completed)**  
+Estimate: 1-2 weeks.
+
+3. Backup/restore CLI + metadata registry + docs. **(Completed)**  
+Estimate: 2-3 weeks.
+
+4. Usage aggregation + export endpoints + cost allocation tags. **(Completed)**  
+Estimate: 2-3 weeks.
+
+5. Tool pack registry interfaces + local registry + CLI. **(Completed)**  
+Estimate: 2-3 weeks.
+
+6. Reliability policies (retry/circuit breaker/fallback) + replay mode. **(Completed)**  
 Estimate: 2-3 weeks.

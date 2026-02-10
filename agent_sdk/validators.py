@@ -16,6 +16,7 @@ class RunTaskRequest(BaseModel):
     timeout: Optional[int] = Field(
         default=300, ge=1, le=3600, description="Timeout in seconds"
     )
+    tags: Optional[Dict[str, str]] = Field(default=None, description="Cost allocation tags")
 
     @field_validator("task")
     def task_not_empty(cls, v):
@@ -29,6 +30,7 @@ class RunTaskRequest(BaseModel):
                 "task": "Write a summary of the weather",
                 "config": "config.yaml",
                 "timeout": 300,
+                "tags": {"project": "alpha", "environment": "staging"},
             }
         }
     )
@@ -213,6 +215,49 @@ class ModelPolicyRequest(BaseModel):
     org_id: str = Field(..., min_length=1, max_length=100)
     allowed_models: List[str] = Field(default_factory=list)
     fallback_models: List[str] = Field(default_factory=list)
+
+
+class PolicyBundleCreateRequest(BaseModel):
+    """Request to create a governance policy bundle."""
+
+    bundle_id: str = Field(..., min_length=1, max_length=100)
+    content: Dict[str, Any] = Field(default_factory=dict)
+    description: Optional[str] = Field(default=None, max_length=200)
+    version: Optional[int] = Field(default=None, ge=1)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "bundle_id": "enterprise-default",
+                "content": {
+                    "tools": {"allow": ["filesystem.read"], "deny": ["filesystem.write"]},
+                    "egress": {"allow_domains": ["example.com"]},
+                    "models": {"allow": ["gpt-4"]},
+                },
+                "description": "Default governance policy bundle",
+            }
+        }
+    )
+
+
+class PolicyBundleAssignRequest(BaseModel):
+    """Request to assign a policy bundle to a tenant."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    bundle_id: str = Field(..., min_length=1, max_length=100)
+    version: int = Field(..., ge=1)
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "org_id": "default",
+                "bundle_id": "enterprise-default",
+                "version": 1,
+                "overrides": {"tools": {"allow": ["filesystem.read", "http.fetch"]}},
+            }
+        }
+    )
 
 
 class QuotaUpdateRequest(BaseModel):

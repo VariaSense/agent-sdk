@@ -14,7 +14,9 @@ from agent_sdk.server.multi_tenant import (
     QuotaLimits,
     RetentionPolicyConfig,
     ModelPolicy,
+    BackupRecord,
 )
+from agent_sdk.policy.types import PolicyAssignment, PolicyBundle
 
 try:
     import psycopg
@@ -80,6 +82,33 @@ class ControlPlaneBackend:
     def get_model_policy(self, org_id: str) -> Optional[ModelPolicy]:
         raise NotImplementedError
 
+    def create_policy_bundle(self, bundle: PolicyBundle) -> PolicyBundle:
+        raise NotImplementedError
+
+    def list_policy_bundles(self) -> List[PolicyBundle]:
+        raise NotImplementedError
+
+    def list_policy_bundle_versions(self, bundle_id: str) -> List[PolicyBundle]:
+        raise NotImplementedError
+
+    def get_policy_bundle(self, bundle_id: str, version: Optional[int] = None) -> Optional[PolicyBundle]:
+        raise NotImplementedError
+
+    def assign_policy_bundle(self, assignment: PolicyAssignment) -> PolicyAssignment:
+        raise NotImplementedError
+
+    def get_policy_assignment(self, org_id: str) -> Optional[PolicyAssignment]:
+        raise NotImplementedError
+
+    def create_backup_record(self, record: BackupRecord) -> BackupRecord:
+        raise NotImplementedError
+
+    def list_backup_records(self) -> List[BackupRecord]:
+        raise NotImplementedError
+
+    def get_backup_record(self, backup_id: str) -> Optional[BackupRecord]:
+        raise NotImplementedError
+
 
 class SQLiteControlPlane(ControlPlaneBackend):
     def __init__(self, path: str):
@@ -103,7 +132,10 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     model_policy_json TEXT,
                     retention_json TEXT,
                     residency TEXT,
-                    encryption_key TEXT
+                    encryption_key TEXT,
+                    policy_bundle_id TEXT,
+                    policy_bundle_version INTEGER,
+                    policy_overrides_json TEXT
                 )
                 """
             )
@@ -137,6 +169,32 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_bundles (
+                    bundle_id TEXT,
+                    version INTEGER,
+                    content_json TEXT,
+                    description TEXT,
+                    created_at TEXT,
+                    PRIMARY KEY (bundle_id, version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS backups (
+                    backup_id TEXT PRIMARY KEY,
+                    created_at TEXT,
+                    label TEXT,
+                    storage_backend TEXT,
+                    storage_path TEXT,
+                    control_plane_backend TEXT,
+                    control_plane_path TEXT,
+                    metadata_json TEXT
+                )
+                """
+            )
             self._ensure_column(conn, "api_keys", "expires_at", "TEXT")
             self._ensure_column(conn, "api_keys", "rotated_at", "TEXT")
             self._ensure_column(conn, "api_keys", "rate_limit_per_minute", "INTEGER")
@@ -146,6 +204,9 @@ class SQLiteControlPlane(ControlPlaneBackend):
             self._ensure_column(conn, "users", "is_service_account", "INTEGER")
             self._ensure_column(conn, "orgs", "residency", "TEXT")
             self._ensure_column(conn, "orgs", "encryption_key", "TEXT")
+            self._ensure_column(conn, "orgs", "policy_bundle_id", "TEXT")
+            self._ensure_column(conn, "orgs", "policy_bundle_version", "INTEGER")
+            self._ensure_column(conn, "orgs", "policy_overrides_json", "TEXT")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
@@ -163,8 +224,20 @@ class SQLiteControlPlane(ControlPlaneBackend):
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json, retention_json, residency, encryption_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orgs (
+                    org_id,
+                    name,
+                    created_at,
+                    quotas_json,
+                    model_policy_json,
+                    retention_json,
+                    residency,
+                    encryption_key,
+                    policy_bundle_id,
+                    policy_bundle_version,
+                    policy_overrides_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     org.org_id,
@@ -173,6 +246,9 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     json.dumps({}),
                     json.dumps({}),
                     json.dumps({}),
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                 ),
@@ -184,13 +260,27 @@ class SQLiteControlPlane(ControlPlaneBackend):
             row = conn.execute("SELECT * FROM orgs WHERE org_id = ?", (org_id,)).fetchone()
             if not row:
                 return None
-            return Organization(org_id=row["org_id"], name=row["name"], created_at=row["created_at"])
+            return Organization(
+                org_id=row["org_id"],
+                name=row["name"],
+                created_at=row["created_at"],
+                policy_bundle_id=row["policy_bundle_id"],
+                policy_bundle_version=row["policy_bundle_version"],
+                policy_overrides=json.loads(row["policy_overrides_json"] or "{}"),
+            )
 
     def list_orgs(self) -> List[Organization]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM orgs ORDER BY created_at ASC").fetchall()
             return [
-                Organization(org_id=row["org_id"], name=row["name"], created_at=row["created_at"])
+                Organization(
+                    org_id=row["org_id"],
+                    name=row["name"],
+                    created_at=row["created_at"],
+                    policy_bundle_id=row["policy_bundle_id"],
+                    policy_bundle_version=row["policy_bundle_version"],
+                    policy_overrides=json.loads(row["policy_overrides_json"] or "{}"),
+                )
                 for row in rows
             ]
 
@@ -371,6 +461,217 @@ class SQLiteControlPlane(ControlPlaneBackend):
             data = json.loads(row["model_policy_json"] or "{}")
             return ModelPolicy(**data)
 
+    def create_policy_bundle(self, bundle: PolicyBundle) -> PolicyBundle:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT MAX(version) AS max_version FROM policy_bundles WHERE bundle_id = ?",
+                (bundle.bundle_id,),
+            ).fetchone()
+            next_version = bundle.version or ((existing["max_version"] or 0) + 1)
+            conn.execute(
+                """
+                INSERT INTO policy_bundles (bundle_id, version, content_json, description, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    bundle.bundle_id,
+                    next_version,
+                    json.dumps(bundle.content),
+                    bundle.description,
+                    bundle.created_at,
+                ),
+            )
+        return PolicyBundle(
+            bundle_id=bundle.bundle_id,
+            version=next_version,
+            content=bundle.content,
+            description=bundle.description,
+            created_at=bundle.created_at,
+        )
+
+    def list_policy_bundles(self) -> List[PolicyBundle]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT pb.bundle_id, pb.version, pb.content_json, pb.description, pb.created_at
+                FROM policy_bundles pb
+                JOIN (
+                    SELECT bundle_id, MAX(version) AS max_version
+                    FROM policy_bundles
+                    GROUP BY bundle_id
+                ) latest
+                ON pb.bundle_id = latest.bundle_id AND pb.version = latest.max_version
+                ORDER BY pb.bundle_id ASC
+                """
+            ).fetchall()
+            return [
+                PolicyBundle(
+                    bundle_id=row["bundle_id"],
+                    version=row["version"],
+                    content=json.loads(row["content_json"] or "{}"),
+                    description=row["description"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
+    def list_policy_bundle_versions(self, bundle_id: str) -> List[PolicyBundle]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT bundle_id, version, content_json, description, created_at
+                FROM policy_bundles
+                WHERE bundle_id = ?
+                ORDER BY version ASC
+                """,
+                (bundle_id,),
+            ).fetchall()
+            return [
+                PolicyBundle(
+                    bundle_id=row["bundle_id"],
+                    version=row["version"],
+                    content=json.loads(row["content_json"] or "{}"),
+                    description=row["description"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
+    def get_policy_bundle(self, bundle_id: str, version: Optional[int] = None) -> Optional[PolicyBundle]:
+        with self._connect() as conn:
+            if version is None:
+                row = conn.execute(
+                    """
+                    SELECT bundle_id, version, content_json, description, created_at
+                    FROM policy_bundles
+                    WHERE bundle_id = ?
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """,
+                    (bundle_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT bundle_id, version, content_json, description, created_at
+                    FROM policy_bundles
+                    WHERE bundle_id = ? AND version = ?
+                    """,
+                    (bundle_id, version),
+                ).fetchone()
+            if not row:
+                return None
+            return PolicyBundle(
+                bundle_id=row["bundle_id"],
+                version=row["version"],
+                content=json.loads(row["content_json"] or "{}"),
+                description=row["description"],
+                created_at=row["created_at"],
+            )
+
+    def assign_policy_bundle(self, assignment: PolicyAssignment) -> PolicyAssignment:
+        self.ensure_org(assignment.org_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orgs
+                SET policy_bundle_id = ?, policy_bundle_version = ?, policy_overrides_json = ?
+                WHERE org_id = ?
+                """,
+                (
+                    assignment.bundle_id,
+                    assignment.version,
+                    json.dumps(assignment.overrides),
+                    assignment.org_id,
+                ),
+            )
+        return assignment
+
+    def get_policy_assignment(self, org_id: str) -> Optional[PolicyAssignment]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT policy_bundle_id, policy_bundle_version, policy_overrides_json
+                FROM orgs
+                WHERE org_id = ?
+                """,
+                (org_id,),
+            ).fetchone()
+            if not row or not row["policy_bundle_id"] or row["policy_bundle_version"] is None:
+                return None
+            return PolicyAssignment(
+                org_id=org_id,
+                bundle_id=row["policy_bundle_id"],
+                version=row["policy_bundle_version"],
+                overrides=json.loads(row["policy_overrides_json"] or "{}"),
+            )
+
+    def create_backup_record(self, record: BackupRecord) -> BackupRecord:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO backups (
+                    backup_id,
+                    created_at,
+                    label,
+                    storage_backend,
+                    storage_path,
+                    control_plane_backend,
+                    control_plane_path,
+                    metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.backup_id,
+                    record.created_at,
+                    record.label,
+                    record.storage_backend,
+                    record.storage_path,
+                    record.control_plane_backend,
+                    record.control_plane_path,
+                    json.dumps(record.metadata),
+                ),
+            )
+        return record
+
+    def list_backup_records(self) -> List[BackupRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM backups ORDER BY created_at DESC"
+            ).fetchall()
+            return [
+                BackupRecord(
+                    backup_id=row["backup_id"],
+                    created_at=row["created_at"],
+                    label=row["label"],
+                    storage_backend=row["storage_backend"],
+                    storage_path=row["storage_path"],
+                    control_plane_backend=row["control_plane_backend"],
+                    control_plane_path=row["control_plane_path"],
+                    metadata=json.loads(row["metadata_json"] or "{}"),
+                )
+                for row in rows
+            ]
+
+    def get_backup_record(self, backup_id: str) -> Optional[BackupRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM backups WHERE backup_id = ?",
+                (backup_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return BackupRecord(
+                backup_id=row["backup_id"],
+                created_at=row["created_at"],
+                label=row["label"],
+                storage_backend=row["storage_backend"],
+                storage_path=row["storage_path"],
+                control_plane_backend=row["control_plane_backend"],
+                control_plane_path=row["control_plane_path"],
+                metadata=json.loads(row["metadata_json"] or "{}"),
+            )
+
 
 class PostgresControlPlane(ControlPlaneBackend):
     def __init__(self, dsn: str, initialize_schema: bool = True):
@@ -393,7 +694,10 @@ class PostgresControlPlane(ControlPlaneBackend):
                     model_policy_json JSONB,
                     retention_json JSONB,
                     residency TEXT,
-                    encryption_key TEXT
+                    encryption_key TEXT,
+                    policy_bundle_id TEXT,
+                    policy_bundle_version INTEGER,
+                    policy_overrides_json JSONB
                 );
                 """
             )
@@ -427,6 +731,32 @@ class PostgresControlPlane(ControlPlaneBackend):
                 );
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_bundles (
+                    bundle_id TEXT,
+                    version INTEGER,
+                    content_json JSONB,
+                    description TEXT,
+                    created_at TEXT,
+                    PRIMARY KEY (bundle_id, version)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS backups (
+                    backup_id TEXT PRIMARY KEY,
+                    created_at TEXT,
+                    label TEXT,
+                    storage_backend TEXT,
+                    storage_path TEXT,
+                    control_plane_backend TEXT,
+                    control_plane_path TEXT,
+                    metadata_json JSONB
+                );
+                """
+            )
         self._conn.commit()
 
     def ensure_org(self, org_id: str, name: Optional[str] = None) -> Organization:
@@ -437,10 +767,34 @@ class PostgresControlPlane(ControlPlaneBackend):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json, retention_json, residency, encryption_key)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO orgs (
+                    org_id,
+                    name,
+                    created_at,
+                    quotas_json,
+                    model_policy_json,
+                    retention_json,
+                    residency,
+                    encryption_key,
+                    policy_bundle_id,
+                    policy_bundle_version,
+                    policy_overrides_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (org.org_id, org.name, org.created_at, json.dumps({}), json.dumps({}), json.dumps({}), None, None),
+                (
+                    org.org_id,
+                    org.name,
+                    org.created_at,
+                    json.dumps({}),
+                    json.dumps({}),
+                    json.dumps({}),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
             )
         self._conn.commit()
         return org
@@ -451,13 +805,30 @@ class PostgresControlPlane(ControlPlaneBackend):
             row = cur.fetchone()
             if not row:
                 return None
-            return Organization(org_id=row[0], name=row[1], created_at=row[2])
+            return Organization(
+                org_id=row[0],
+                name=row[1],
+                created_at=row[2],
+                policy_bundle_id=row[8],
+                policy_bundle_version=row[9],
+                policy_overrides=row[10] or {},
+            )
 
     def list_orgs(self) -> List[Organization]:
         with self._conn.cursor() as cur:
             cur.execute("SELECT * FROM orgs ORDER BY created_at ASC")
             rows = cur.fetchall()
-            return [Organization(org_id=row[0], name=row[1], created_at=row[2]) for row in rows]
+            return [
+                Organization(
+                    org_id=row[0],
+                    name=row[1],
+                    created_at=row[2],
+                    policy_bundle_id=row[8],
+                    policy_bundle_version=row[9],
+                    policy_overrides=row[10] or {},
+                )
+                for row in rows
+            ]
 
     def create_user(self, org_id: str, user: User) -> User:
         self.ensure_org(org_id)
@@ -649,3 +1020,219 @@ class PostgresControlPlane(ControlPlaneBackend):
             if not row or not row[0]:
                 return None
             return ModelPolicy(**row[0])
+
+    def create_policy_bundle(self, bundle: PolicyBundle) -> PolicyBundle:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(version) FROM policy_bundles WHERE bundle_id = %s",
+                (bundle.bundle_id,),
+            )
+            max_version = cur.fetchone()[0] or 0
+            next_version = bundle.version or (max_version + 1)
+            cur.execute(
+                """
+                INSERT INTO policy_bundles (bundle_id, version, content_json, description, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    bundle.bundle_id,
+                    next_version,
+                    json.dumps(bundle.content),
+                    bundle.description,
+                    bundle.created_at,
+                ),
+            )
+        self._conn.commit()
+        return PolicyBundle(
+            bundle_id=bundle.bundle_id,
+            version=next_version,
+            content=bundle.content,
+            description=bundle.description,
+            created_at=bundle.created_at,
+        )
+
+    def list_policy_bundles(self) -> List[PolicyBundle]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pb.bundle_id, pb.version, pb.content_json, pb.description, pb.created_at
+                FROM policy_bundles pb
+                JOIN (
+                    SELECT bundle_id, MAX(version) AS max_version
+                    FROM policy_bundles
+                    GROUP BY bundle_id
+                ) latest
+                ON pb.bundle_id = latest.bundle_id AND pb.version = latest.max_version
+                ORDER BY pb.bundle_id ASC
+                """
+            )
+            rows = cur.fetchall()
+            return [
+                PolicyBundle(
+                    bundle_id=row[0],
+                    version=row[1],
+                    content=row[2] or {},
+                    description=row[3],
+                    created_at=row[4],
+                )
+                for row in rows
+            ]
+
+    def list_policy_bundle_versions(self, bundle_id: str) -> List[PolicyBundle]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bundle_id, version, content_json, description, created_at
+                FROM policy_bundles
+                WHERE bundle_id = %s
+                ORDER BY version ASC
+                """,
+                (bundle_id,),
+            )
+            rows = cur.fetchall()
+            return [
+                PolicyBundle(
+                    bundle_id=row[0],
+                    version=row[1],
+                    content=row[2] or {},
+                    description=row[3],
+                    created_at=row[4],
+                )
+                for row in rows
+            ]
+
+    def get_policy_bundle(self, bundle_id: str, version: Optional[int] = None) -> Optional[PolicyBundle]:
+        with self._conn.cursor() as cur:
+            if version is None:
+                cur.execute(
+                    """
+                    SELECT bundle_id, version, content_json, description, created_at
+                    FROM policy_bundles
+                    WHERE bundle_id = %s
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """,
+                    (bundle_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT bundle_id, version, content_json, description, created_at
+                    FROM policy_bundles
+                    WHERE bundle_id = %s AND version = %s
+                    """,
+                    (bundle_id, version),
+                )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return PolicyBundle(
+                bundle_id=row[0],
+                version=row[1],
+                content=row[2] or {},
+                description=row[3],
+                created_at=row[4],
+            )
+
+    def assign_policy_bundle(self, assignment: PolicyAssignment) -> PolicyAssignment:
+        self.ensure_org(assignment.org_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE orgs
+                SET policy_bundle_id = %s, policy_bundle_version = %s, policy_overrides_json = %s
+                WHERE org_id = %s
+                """,
+                (
+                    assignment.bundle_id,
+                    assignment.version,
+                    json.dumps(assignment.overrides),
+                    assignment.org_id,
+                ),
+            )
+        self._conn.commit()
+        return assignment
+
+    def get_policy_assignment(self, org_id: str) -> Optional[PolicyAssignment]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT policy_bundle_id, policy_bundle_version, policy_overrides_json
+                FROM orgs
+                WHERE org_id = %s
+                """,
+                (org_id,),
+            )
+            row = cur.fetchone()
+            if not row or not row[0] or row[1] is None:
+                return None
+            return PolicyAssignment(
+                org_id=org_id,
+                bundle_id=row[0],
+                version=row[1],
+                overrides=row[2] or {},
+            )
+
+    def create_backup_record(self, record: BackupRecord) -> BackupRecord:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO backups (
+                    backup_id,
+                    created_at,
+                    label,
+                    storage_backend,
+                    storage_path,
+                    control_plane_backend,
+                    control_plane_path,
+                    metadata_json
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    record.backup_id,
+                    record.created_at,
+                    record.label,
+                    record.storage_backend,
+                    record.storage_path,
+                    record.control_plane_backend,
+                    record.control_plane_path,
+                    json.dumps(record.metadata),
+                ),
+            )
+        self._conn.commit()
+        return record
+
+    def list_backup_records(self) -> List[BackupRecord]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM backups ORDER BY created_at DESC")
+            rows = cur.fetchall()
+            return [
+                BackupRecord(
+                    backup_id=row[0],
+                    created_at=row[1],
+                    label=row[2],
+                    storage_backend=row[3],
+                    storage_path=row[4],
+                    control_plane_backend=row[5],
+                    control_plane_path=row[6],
+                    metadata=row[7] or {},
+                )
+                for row in rows
+            ]
+
+    def get_backup_record(self, backup_id: str) -> Optional[BackupRecord]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM backups WHERE backup_id = %s", (backup_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return BackupRecord(
+                backup_id=row[0],
+                created_at=row[1],
+                label=row[2],
+                storage_backend=row[3],
+                storage_path=row[4],
+                control_plane_backend=row[5],
+                control_plane_path=row[6],
+                metadata=row[7] or {},
+            )

@@ -273,6 +273,48 @@ class PostgresStorage(StorageBackend):
                 metadata=maybe_decrypt(json.loads(row[10] or "{}"), key),
             )
 
+    def list_runs(self, org_id: Optional[str] = None, limit: int = 1000) -> List[RunMetadata]:
+        with self._conn.cursor() as cur:
+            if org_id:
+                cur.execute(
+                    """
+                    SELECT * FROM runs
+                    WHERE org_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (org_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM runs
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+            runs = []
+            for row in rows:
+                key = self._key_for_org(row[3] or "default")
+                runs.append(
+                    RunMetadata(
+                        run_id=row[0],
+                        session_id=row[1],
+                        agent_id=row[2],
+                        org_id=row[3] or "default",
+                        status=RunStatus(row[4]),
+                        model=row[5],
+                        created_at=row[6],
+                        started_at=row[7],
+                        ended_at=row[8],
+                        tags=maybe_decrypt(json.loads(row[9] or "{}"), key),
+                        metadata=maybe_decrypt(json.loads(row[10] or "{}"), key),
+                    )
+                )
+            return runs
+
     def append_event(self, event: StreamEnvelope) -> None:
         key = self._key_for_org(event.metadata.get("org_id", "default"))
         with self._conn.cursor() as cur:

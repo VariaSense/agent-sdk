@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import secrets
 
 from typing import TYPE_CHECKING
@@ -23,6 +23,9 @@ class Organization:
     name: str
     created_at: str = field(default_factory=_now_iso)
     quotas: Dict[str, int] = field(default_factory=dict)
+    policy_bundle_id: Optional[str] = None
+    policy_bundle_version: Optional[int] = None
+    policy_overrides: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,18 @@ class UsageSummary:
 
 
 @dataclass(frozen=True)
+class BackupRecord:
+    backup_id: str
+    created_at: str
+    label: Optional[str]
+    storage_backend: str
+    storage_path: Optional[str]
+    control_plane_backend: str
+    control_plane_path: Optional[str]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class QuotaLimits:
     max_runs: Optional[int] = None
     max_sessions: Optional[int] = None
@@ -95,6 +110,8 @@ class MultiTenantStore:
         self._residency: Dict[str, Optional[str]] = {}
         self._encryption_keys: Dict[str, Optional[str]] = {}
         self._model_policies: Dict[str, ModelPolicy] = {}
+        self._policy_bundles: Dict[str, List["PolicyBundle"]] = {}
+        self._policy_assignments: Dict[str, "PolicyAssignment"] = {}
         self._model_catalog: List[str] = []
         self.ensure_org("default", "Default Org")
 
@@ -353,6 +370,91 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.get_model_policy(org_id)
         return self._model_policies.get(org_id)
+
+    def create_policy_bundle(
+        self,
+        bundle_id: str,
+        content: Dict[str, Any],
+        description: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> "PolicyBundle":
+        from agent_sdk.policy.types import PolicyBundle
+
+        if self._backend is not None:
+            return self._backend.create_policy_bundle(
+                PolicyBundle(
+                    bundle_id=bundle_id,
+                    version=version or 0,
+                    content=content,
+                    description=description,
+                )
+            )
+        versions = self._policy_bundles.setdefault(bundle_id, [])
+        next_version = version or (max((b.version for b in versions), default=0) + 1)
+        bundle = PolicyBundle(
+            bundle_id=bundle_id,
+            version=next_version,
+            content=content,
+            description=description,
+        )
+        versions.append(bundle)
+        return bundle
+
+    def list_policy_bundles(self) -> List["PolicyBundle"]:
+        from agent_sdk.policy.types import PolicyBundle
+
+        if self._backend is not None:
+            return self._backend.list_policy_bundles()
+        latest: List[PolicyBundle] = []
+        for versions in self._policy_bundles.values():
+            if not versions:
+                continue
+            latest.append(max(versions, key=lambda b: b.version))
+        return latest
+
+    def list_policy_bundle_versions(self, bundle_id: str) -> List["PolicyBundle"]:
+        if self._backend is not None:
+            return self._backend.list_policy_bundle_versions(bundle_id)
+        return sorted(self._policy_bundles.get(bundle_id, []), key=lambda b: b.version)
+
+    def get_policy_bundle(self, bundle_id: str, version: Optional[int] = None) -> Optional["PolicyBundle"]:
+        if self._backend is not None:
+            return self._backend.get_policy_bundle(bundle_id, version=version)
+        versions = self._policy_bundles.get(bundle_id, [])
+        if not versions:
+            return None
+        if version is None:
+            return max(versions, key=lambda b: b.version)
+        for bundle in versions:
+            if bundle.version == version:
+                return bundle
+        return None
+
+    def assign_policy_bundle(
+        self,
+        org_id: str,
+        bundle_id: str,
+        version: int,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> "PolicyAssignment":
+        from agent_sdk.policy.types import PolicyAssignment
+
+        self.ensure_org(org_id)
+        assignment = PolicyAssignment(
+            org_id=org_id,
+            bundle_id=bundle_id,
+            version=version,
+            overrides=overrides or {},
+        )
+        if self._backend is not None:
+            return self._backend.assign_policy_bundle(assignment)
+        self._policy_assignments[org_id] = assignment
+        return assignment
+
+    def get_policy_assignment(self, org_id: str) -> Optional["PolicyAssignment"]:
+        if self._backend is not None:
+            return self._backend.get_policy_assignment(org_id)
+        return self._policy_assignments.get(org_id)
 
     def resolve_model(self, org_id: str, requested: Optional[str]) -> Optional[str]:
         policy = self._model_policies.get(org_id)

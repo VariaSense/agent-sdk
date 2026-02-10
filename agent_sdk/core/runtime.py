@@ -13,20 +13,22 @@ class PlannerExecutorRuntime:
         self,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> None:
         resolved_session_id = session_id or self.planner.context.session_id or new_session_id()
         resolved_run_id = run_id or new_run_id()
 
-        self.planner.context.set_run_context(resolved_session_id, resolved_run_id)
-        self.executor.context.set_run_context(resolved_session_id, resolved_run_id)
+        self.planner.context.set_run_context(resolved_session_id, resolved_run_id, org_id=org_id)
+        self.executor.context.set_run_context(resolved_session_id, resolved_run_id, org_id=org_id)
 
     def run(
         self,
         task_text: str,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Message]:
-        self._prepare_run_context(session_id=session_id, run_id=run_id)
+        self._prepare_run_context(session_id=session_id, run_id=run_id, org_id=org_id)
         task_msg = make_message("user", task_text)
         self.planner.context.apply_run_metadata(task_msg)
         observability = self.planner.context.config.get("observability")
@@ -47,8 +49,9 @@ class PlannerExecutorRuntime:
         task_text: str,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Message]:
-        self._prepare_run_context(session_id=session_id, run_id=run_id)
+        self._prepare_run_context(session_id=session_id, run_id=run_id, org_id=org_id)
         task_msg = make_message("user", task_text)
         self.planner.context.apply_run_metadata(task_msg)
         observability = self.planner.context.config.get("observability")

@@ -1,10 +1,13 @@
 import logging
 import asyncio
 import os
+import csv
+import io
+import json
 from datetime import datetime, timezone, timedelta
 import secrets
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
@@ -47,6 +50,8 @@ from agent_sdk.validators import (
     ResidencyRequest,
     EncryptionKeyRequest,
     PromptPolicyCreateRequest,
+    PolicyBundleCreateRequest,
+    PolicyBundleAssignRequest,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
 from agent_sdk.observability.stream_envelope import (
@@ -60,7 +65,7 @@ from agent_sdk.observability.stream_envelope import (
 )
 from agent_sdk.observability.run_logs import create_run_log_exporters
 from agent_sdk.observability.event_retention import EventRetentionPolicy
-from agent_sdk.observability.audit_logs import AuditLogEntry, create_audit_loggers
+from agent_sdk.observability.audit_logs import AuditLogEntry, AuditHashChain, create_audit_loggers
 from agent_sdk.observability.redaction import RedactionPolicy, Redactor
 from agent_sdk.observability.otel import ObservabilityManager
 from agent_sdk.observability.prometheus import ObservabilityPrometheusCollector
@@ -75,9 +80,11 @@ from agent_sdk.execution.durable_queue import (
     SQSQueueBackend,
     KafkaQueueBackend,
 )
+from agent_sdk.policy.engine import PolicyEngine
 from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
 from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
+from agent_sdk.reliability.policy import ReliabilityManager, RetryPolicy, CircuitBreakerPolicy, ReplayStore
 from agent_sdk.storage import SQLiteStorage, PostgresStorage
 from agent_sdk.server.gateway import GatewayServer
 from agent_sdk.server.device_registry import DeviceRegistry
@@ -154,6 +161,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             "yes",
             "on",
         }
+        audit_hash_chain_enabled = os.getenv("AGENT_SDK_AUDIT_HASH_CHAIN", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        audit_http_endpoint = os.getenv("AGENT_SDK_AUDIT_HTTP_ENDPOINT")
+        audit_http_timeout = float(os.getenv("AGENT_SDK_AUDIT_HTTP_TIMEOUT", "5.0"))
         storage_backend = os.getenv("AGENT_SDK_STORAGE_BACKEND", "sqlite").lower()
         if storage_backend == "postgres":
             dsn = os.getenv("AGENT_SDK_POSTGRES_DSN")
@@ -181,6 +196,26 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             cp_path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
             control_plane = SQLiteControlPlane(cp_path)
         tenant_store = MultiTenantStore(control_plane)
+        policy_engine = PolicyEngine(tenant_store)
+        reliability_enabled = os.getenv("AGENT_SDK_RELIABILITY_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        reliability_manager = None
+        if reliability_enabled:
+            retry_policy = RetryPolicy(
+                max_retries=int(os.getenv("AGENT_SDK_TOOL_RETRY_MAX", "2")),
+                base_delay=float(os.getenv("AGENT_SDK_TOOL_RETRY_BASE_DELAY", "0.5")),
+                max_delay=float(os.getenv("AGENT_SDK_TOOL_RETRY_MAX_DELAY", "5.0")),
+                exponential_base=float(os.getenv("AGENT_SDK_TOOL_RETRY_EXP_BASE", "2.0")),
+            )
+            breaker_policy = CircuitBreakerPolicy(
+                failure_threshold=int(os.getenv("AGENT_SDK_TOOL_CIRCUIT_FAILURE_THRESHOLD", "3")),
+                reset_timeout_seconds=float(os.getenv("AGENT_SDK_TOOL_CIRCUIT_RESET_SECONDS", "30")),
+            )
+            reliability_manager = ReliabilityManager(retry_policy, breaker_policy)
         try:
             tenant_store.set_model_catalog(load_model_names(config_path))
         except Exception:
@@ -193,6 +228,26 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         }
         if encryption_enabled:
             storage.set_encryption_resolver(lambda org_id: tenant_store.get_encryption_key(org_id))
+        planner.context.config["policy_engine"] = policy_engine
+        executor.context.config["policy_engine"] = policy_engine
+        if reliability_manager:
+            planner.context.config["reliability_manager"] = reliability_manager
+            executor.context.config["reliability_manager"] = reliability_manager
+        replay_mode = os.getenv("AGENT_SDK_REPLAY_MODE", "").lower() in {"1", "true", "yes", "on"}
+        replay_store = None
+        replay_path = os.getenv("AGENT_SDK_REPLAY_PATH")
+        if replay_path and os.path.exists(replay_path):
+            try:
+                with open(replay_path, "r", encoding="utf-8") as handle:
+                    replay_store = ReplayStore(json.load(handle))
+            except Exception:
+                replay_store = ReplayStore()
+        elif replay_mode:
+            replay_store = ReplayStore()
+        if replay_store:
+            executor.context.config["replay_store"] = replay_store
+            executor.context.config["replay_mode"] = replay_mode
+            executor.context.config["replay_strict"] = os.getenv("AGENT_SDK_REPLAY_STRICT", "").lower() in {"1", "true", "yes", "on"}
         run_store = RunEventStore(
             max_events=stream_max_events,
             queue_size=stream_queue_size,
@@ -226,6 +281,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         payload["task"],
                         session_id=payload["session_id"],
                         run_id=payload["run_id"],
+                        org_id=payload.get("org_id"),
                     ),
                     poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
                     max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
@@ -238,6 +294,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         payload["task"],
                         session_id=payload["session_id"],
                         run_id=payload["run_id"],
+                        org_id=payload.get("org_id"),
                     ),
                     poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
                     max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
@@ -253,6 +310,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         payload["task"],
                         session_id=payload["session_id"],
                         run_id=payload["run_id"],
+                        org_id=payload.get("org_id"),
                     ),
                     poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
                     max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
@@ -265,6 +323,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         payload["task"],
                         session_id=payload["session_id"],
                         run_id=payload["run_id"],
+                        org_id=payload.get("org_id"),
                     ),
                     poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
                     max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
@@ -280,10 +339,16 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         idempotency_store = IdempotencyStore(
             ttl_minutes=int(os.getenv("AGENT_SDK_IDEMPOTENCY_TTL_MINUTES", "60"))
         )
+        hash_chain = None
+        if audit_hash_chain_enabled and audit_path:
+            hash_chain = AuditHashChain(AuditHashChain.load_last_hash(audit_path))
         audit_logger = create_audit_loggers(
             path=audit_path,
             emit_stdout=audit_stdout,
             redactor=redactor,
+            hash_chain=hash_chain,
+            http_endpoint=audit_http_endpoint,
+            http_timeout_seconds=audit_http_timeout,
         )
         api_key_manager = get_api_key_manager()
         if api_key_manager.api_key:
@@ -369,9 +434,9 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         if auth_header != f"Bearer {token}":
             raise HTTPException(status_code=401, detail="Invalid SCIM token")
 
-    async def _run_with_policies(task: str, session_id: str, run_id: str):
+    async def _run_with_policies(task: str, session_id: str, run_id: str, org_id: str):
         async def _invoke():
-            return await runtime.run_async(task, session_id=session_id, run_id=run_id)
+            return await runtime.run_async(task, session_id=session_id, run_id=run_id, org_id=org_id)
 
         async def _invoke_with_retry():
             if retry_config.max_retries <= 1:
@@ -386,7 +451,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
         if durable_queue is not None:
             return await durable_queue.submit(
-                {"task": task, "session_id": session_id, "run_id": run_id}
+                {"task": task, "session_id": session_id, "run_id": run_id, "org_id": org_id}
             )
         if execution_queue is not None:
             return await execution_queue.submit(_invoke_with_retry)
@@ -411,6 +476,31 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             cutoff = now - timedelta(days=policy.max_session_age_days)
             storage.prune_sessions(org_id, cutoff.isoformat())
 
+    def _load_audit_entries(path: Optional[str], org_id: Optional[str], limit: Optional[int]) -> list[dict]:
+        if not path or not os.path.exists(path):
+            return []
+        entries: list[dict] = []
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if org_id and payload.get("org_id") != org_id:
+                    continue
+                entries.append(payload)
+                if limit and len(entries) >= limit:
+                    break
+        return entries
+
+    def _assert_model_policy(org_id: str, model_id: Optional[str]) -> None:
+        decision = policy_engine.evaluate_model(org_id, model_id)
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=f"Policy denied model: {decision.reason}")
+
     async def _submit_scheduled(entry):
         org_id = entry.org_id
         _assert_residency(org_id)
@@ -426,6 +516,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         tenant_store.record_session(org_id)
         requested_model = planner.context.model_config.model_id if planner.context.model_config else None
         resolved_model = tenant_store.resolve_model(org_id, requested_model)
+        model_decision = policy_engine.evaluate_model(org_id, resolved_model)
+        if not model_decision.allowed:
+            logger.warning(
+                "Scheduled run blocked for org %s due to model policy: %s",
+                org_id,
+                model_decision.reason,
+            )
+            return
         scheduled_metadata = {
             "request_id": f"schedule_{entry.schedule_id}",
             "trace_id": entry.schedule_id,
@@ -444,7 +542,8 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         storage.create_run(run_meta)
         tenant_store.record_run(org_id)
         try:
-            msgs = await _run_with_policies(entry.task, session_id=session_id, run_id=run_id)
+            msgs = await _run_with_policies(entry.task, session_id=session_id, run_id=run_id, org_id=org_id)
+            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
@@ -452,10 +551,9 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
                 model=resolved_model,
-                metadata=scheduled_metadata,
+                metadata={**scheduled_metadata, "token_count": token_count},
             )
             storage.update_run(run_meta)
-            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
             tenant_store.record_tokens(org_id, token_count)
         except Exception as exc:
             logger.error("Scheduled run failed: %s", exc, exc_info=True)
@@ -570,6 +668,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.storage = storage
     app.state.event_storage = storage if storage_backend == "postgres" else None
     app.state.tenant_store = tenant_store
+    app.state.policy_engine = policy_engine
     app.state.device_registry = device_registry
     app.state.audit_logger = audit_logger
     app.state.prompt_registry = prompt_registry
@@ -690,6 +789,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
             requested_model = planner.context.model_config.model_id if planner.context.model_config else None
             resolved_model = tenant_store.resolve_model(org_id, requested_model)
+            _assert_model_policy(org_id, resolved_model)
             run_metadata = {
                 "request_id": request.state.request_id,
                 "trace_id": request.state.trace_id,
@@ -701,12 +801,15 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.RUNNING,
                 model=resolved_model,
+                tags=req.tags or {},
                 metadata=run_metadata,
             )
             storage.create_run(run_meta)
             tenant_store.record_run(org_id)
 
-            msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id)
+            msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id, org_id=org_id)
+            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
+            run_metadata["token_count"] = token_count
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
@@ -714,11 +817,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
                 model=resolved_model,
+                tags=req.tags or {},
                 metadata=run_metadata,
             )
             storage.update_run(run_meta)
-            
-            token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
             tenant_store.record_tokens(org_id, token_count)
             result_data = {
                 "run_id": run_id,
@@ -804,7 +906,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 run_store.append_event(run_id, start_event)
                 seq += 1
 
-                msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id)
+                msgs = await _run_with_policies(req.task, session_id=session_id, run_id=run_id, org_id=org_id)
                 for msg in msgs:
                     run_store.append_event(
                         run_id,
@@ -836,6 +938,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                     metadata={"org_id": org_id},
                 )
                 run_store.append_event(run_id, end_event)
+                token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
                 storage.update_run(
                     RunMetadata(
                         run_id=run_id,
@@ -843,9 +946,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         agent_id="planner-executor",
                         status=RunStatus.COMPLETED,
                         model=model_id,
+                        tags=req.tags or {},
+                        metadata={"token_count": token_count},
                     )
                 )
-                token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
                 tenant_store.record_tokens(org_id, token_count)
             except Exception as e:
                 logger.error(f"Error during streaming execution: {e}", exc_info=True)
@@ -869,6 +973,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         agent_id="planner-executor",
                         status=RunStatus.ERROR,
                         model=model_id,
+                        tags=req.tags or {},
                     )
                 )
 
@@ -897,6 +1002,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         tenant_store.record_session(org_id)
         requested_model = planner.context.model_config.model_id if planner.context.model_config else None
         resolved_model = tenant_store.resolve_model(org_id, requested_model)
+        _assert_model_policy(org_id, resolved_model)
         storage.create_run(
             RunMetadata(
                 run_id=run_id,
@@ -905,6 +1011,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.RUNNING,
                 model=resolved_model,
+                tags=req.tags or {},
             )
         )
         tenant_store.record_run(org_id)
@@ -1178,6 +1285,70 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         )
         return [asdict(summary) for summary in tenant_store.usage_summary(org_id)]
+
+    @app.get(
+        "/admin/usage/export",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def usage_export(
+        request: Request,
+        format: str = "json",
+        org_id: Optional[str] = None,
+        group_by: str = "org_id",
+        limit: int = 1000,
+    ):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.usage.export",
+                actor=actor,
+                org_id=audit_org,
+                target_type="usage",
+                metadata={"filter_org_id": org_id, "group_by": group_by, "limit": limit},
+            )
+        )
+        group_fields = [field.strip() for field in group_by.split(",") if field.strip()]
+        runs = storage.list_runs(org_id=org_id, limit=limit)
+        aggregate: Dict[tuple, Dict[str, Any]] = {}
+        session_sets: Dict[tuple, set] = {}
+        for run in runs:
+            key_parts = []
+            for field in group_fields:
+                if field == "org_id":
+                    key_parts.append(run.org_id)
+                else:
+                    key_parts.append(run.tags.get(field, "unknown"))
+            key = tuple(key_parts)
+            session_sets.setdefault(key, set()).add(run.session_id)
+            entry = aggregate.setdefault(
+                key,
+                {
+                    "run_count": 0,
+                    "session_count": 0,
+                    "token_count": 0,
+                },
+            )
+            entry["run_count"] += 1
+            entry["token_count"] += int(run.metadata.get("token_count", 0) or 0)
+        for key, entry in aggregate.items():
+            entry["session_count"] = len(session_sets.get(key, set()))
+        results = []
+        for key, entry in aggregate.items():
+            row = {field: key[idx] for idx, field in enumerate(group_fields)}
+            row.update(entry)
+            results.append(row)
+        if format.lower() == "csv":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            header = group_fields + ["run_count", "session_count", "token_count"]
+            writer.writerow(header)
+            for row in results:
+                writer.writerow([row.get(col) for col in header])
+            return Response(output.getvalue(), media_type="text/csv")
+        if format.lower() != "json":
+            raise HTTPException(status_code=400, detail="format must be json or csv")
+        return {"results": results, "count": len(results)}
 
     @app.get(
         "/admin/users",
@@ -1628,6 +1799,142 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         return {"org_id": req.org_id, "policy": policy.__dict__}
 
     @app.get(
+        "/admin/policy-bundles",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_policy_bundles(request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_bundles.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_bundle",
+            )
+        )
+        return {"bundles": [bundle.__dict__ for bundle in tenant_store.list_policy_bundles()]}
+
+    @app.post(
+        "/admin/policy-bundles",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_policy_bundle(req: PolicyBundleCreateRequest, request: Request):
+        bundle = tenant_store.create_policy_bundle(
+            req.bundle_id,
+            content=req.content,
+            description=req.description,
+            version=req.version,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_bundles.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_bundle",
+                target_id=req.bundle_id,
+                metadata={"version": bundle.version},
+            )
+        )
+        return bundle.__dict__
+
+    @app.get(
+        "/admin/policy-bundles/{bundle_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_policy_bundle_versions(bundle_id: str, request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_bundles.versions",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_bundle",
+                target_id=bundle_id,
+            )
+        )
+        return {
+            "bundle_id": bundle_id,
+            "versions": [bundle.__dict__ for bundle in tenant_store.list_policy_bundle_versions(bundle_id)],
+        }
+
+    @app.get(
+        "/admin/policy-bundles/{bundle_id}/latest",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_latest_policy_bundle(bundle_id: str, request: Request):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_bundles.latest",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_bundle",
+                target_id=bundle_id,
+            )
+        )
+        bundle = tenant_store.get_policy_bundle(bundle_id)
+        if not bundle:
+            raise HTTPException(status_code=404, detail="Policy bundle not found")
+        return bundle.__dict__
+
+    @app.get(
+        "/admin/policy-assignments",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_policy_assignments(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_assignments.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_assignment",
+            )
+        )
+        if org_id:
+            assignment = tenant_store.get_policy_assignment(org_id)
+            return {"org_id": org_id, "assignment": assignment.__dict__ if assignment else None}
+        assignments = [
+            assignment.__dict__
+            for assignment in (
+                tenant_store.get_policy_assignment(org.org_id) for org in tenant_store.list_orgs()
+            )
+            if assignment
+        ]
+        return {"assignments": assignments}
+
+    @app.post(
+        "/admin/policy-assignments",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_policy_assignment(req: PolicyBundleAssignRequest, request: Request):
+        assignment = tenant_store.assign_policy_bundle(
+            req.org_id,
+            req.bundle_id,
+            req.version,
+            overrides=req.overrides,
+        )
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.policy_assignments.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="policy_assignment",
+                target_id=req.org_id,
+                metadata=req.model_dump(),
+            )
+        )
+        return assignment.__dict__
+
+    @app.get(
         "/admin/policies",
         dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
@@ -1643,6 +1950,66 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         )
         return {"policies": prompt_registry.list_policies()}
+
+    @app.get(
+        "/admin/audit-logs/export",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def export_audit_logs(
+        request: Request,
+        format: str = "jsonl",
+        org_id: Optional[str] = None,
+        limit: int = 1000,
+    ):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.audit_logs.export",
+                actor=actor,
+                org_id=audit_org,
+                target_type="audit_log",
+                metadata={"format": format, "org_id": org_id, "limit": limit},
+            )
+        )
+        entries = _load_audit_entries(audit_path, org_id, limit=limit)
+        if not entries:
+            raise HTTPException(status_code=404, detail="No audit logs available")
+        if format.lower() == "csv":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(
+                [
+                    "timestamp",
+                    "action",
+                    "actor",
+                    "org_id",
+                    "target_type",
+                    "target_id",
+                    "prev_hash",
+                    "hash",
+                    "metadata",
+                ]
+            )
+            for entry in entries:
+                writer.writerow(
+                    [
+                        entry.get("timestamp"),
+                        entry.get("action"),
+                        entry.get("actor"),
+                        entry.get("org_id"),
+                        entry.get("target_type"),
+                        entry.get("target_id"),
+                        entry.get("prev_hash"),
+                        entry.get("hash"),
+                        json.dumps(entry.get("metadata", {})),
+                    ]
+                )
+            return Response(output.getvalue(), media_type="text/csv")
+        if format.lower() != "jsonl":
+            raise HTTPException(status_code=400, detail="format must be jsonl or csv")
+        payload = "\n".join(json.dumps(entry) for entry in entries) + "\n"
+        return Response(payload, media_type="application/jsonl")
 
     @app.post(
         "/admin/policies",

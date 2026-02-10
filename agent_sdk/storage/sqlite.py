@@ -279,6 +279,47 @@ class SQLiteStorage(StorageBackend):
                 metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
             )
 
+    def list_runs(self, org_id: Optional[str] = None, limit: int = 1000) -> List[RunMetadata]:
+        with self._connect() as conn:
+            if org_id:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM runs
+                    WHERE org_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (org_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM runs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            runs = []
+            for row in rows:
+                key = self._key_for_org(row["org_id"] or "default")
+                runs.append(
+                    RunMetadata(
+                        run_id=row["run_id"],
+                        session_id=row["session_id"],
+                        agent_id=row["agent_id"],
+                        org_id=row["org_id"] or "default",
+                        status=RunStatus(row["status"]),
+                        model=row["model"],
+                        created_at=row["created_at"],
+                        started_at=row["started_at"],
+                        ended_at=row["ended_at"],
+                        tags=maybe_decrypt(json.loads(row["tags_json"] or "{}"), key),
+                        metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
+                    )
+                )
+            return runs
+
     def append_event(self, event: StreamEnvelope) -> None:
         key = self._key_for_org(event.metadata.get("org_id", "default"))
         with self._connect() as conn:

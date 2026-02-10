@@ -46,6 +46,45 @@ class ExecutorAgent(Agent):
             return StepResult(step_id=step.id, success=False, output=None,
                               error=error_msg)
 
+        replay_store = None
+        replay_mode = False
+        replay_strict = False
+        reliability_manager = None
+        if self.context.config:
+            replay_store = self.context.config.get("replay_store")
+            replay_mode = bool(self.context.config.get("replay_mode"))
+            replay_strict = bool(self.context.config.get("replay_strict"))
+            reliability_manager = self.context.config.get("reliability_manager")
+        if replay_mode and replay_store:
+            cached = replay_store.get(step.id)
+            if cached is not None:
+                return StepResult(step_id=step.id, success=True, output=cached)
+            if replay_strict:
+                return StepResult(
+                    step_id=step.id,
+                    success=False,
+                    output=None,
+                    error=f"Replay data missing for step {step.id}",
+                )
+
+        policy_engine = None
+        if self.context.config:
+            policy_engine = self.context.config.get("policy_engine")
+        if policy_engine and self.context.org_id:
+            decision = policy_engine.evaluate_tool(self.context.org_id, step.tool, step.inputs or {})
+            if not decision.allowed:
+                error_msg = f"Policy denied tool '{step.tool}': {decision.reason}"
+                logger.warning(error_msg)
+                return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
+            if step.tool == "http.fetch" and step.inputs:
+                url = step.inputs.get("url")
+                if url:
+                    egress_decision = policy_engine.evaluate_egress(self.context.org_id, url)
+                    if not egress_decision.allowed:
+                        error_msg = f"Policy denied egress '{url}': {egress_decision.reason}"
+                        logger.warning(error_msg)
+                        return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
+
         if self.context.events:
             self.context.events.emit(ObsEvent("executor.tool.call", self.name,
                                               {"tool": step.tool, "inputs": step.inputs}))
@@ -63,10 +102,17 @@ class ExecutorAgent(Agent):
             if self.context.config:
                 sandbox = self.context.config.get("tool_sandbox")
             if sandbox:
-                output = sandbox.run(tool, step.inputs)
+                call_fn = lambda: sandbox.run(tool, step.inputs)
             else:
-                output = tool(step.inputs)
+                call_fn = lambda: tool(step.inputs)
+            if reliability_manager:
+                output = reliability_manager.execute(step.tool, call_fn)
+            else:
+                output = call_fn()
             success = True
+
+            if replay_store is not None:
+                replay_store.record(step.id, output)
             
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.result", self.name,
@@ -207,7 +253,46 @@ class ExecutorAgent(Agent):
                 self.context.events.emit(ObsEvent("tool.latency", self.name,
                                                   {"tool": step.tool, "latency_ms": 0.0, "success": False}))
             return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
-        
+
+        replay_store = None
+        replay_mode = False
+        replay_strict = False
+        reliability_manager = None
+        if self.context.config:
+            replay_store = self.context.config.get("replay_store")
+            replay_mode = bool(self.context.config.get("replay_mode"))
+            replay_strict = bool(self.context.config.get("replay_strict"))
+            reliability_manager = self.context.config.get("reliability_manager")
+        if replay_mode and replay_store:
+            cached = replay_store.get(step.id)
+            if cached is not None:
+                return StepResult(step_id=step.id, success=True, output=cached)
+            if replay_strict:
+                return StepResult(
+                    step_id=step.id,
+                    success=False,
+                    output=None,
+                    error=f"Replay data missing for step {step.id}",
+                )
+
+        policy_engine = None
+        if self.context.config:
+            policy_engine = self.context.config.get("policy_engine")
+        if policy_engine and self.context.org_id:
+            decision = policy_engine.evaluate_tool(self.context.org_id, step.tool, step.inputs or {})
+            if not decision.allowed:
+                error_msg = f"Policy denied tool '{step.tool}': {decision.reason}"
+                logger.warning(error_msg)
+                return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
+            if step.tool == "http.fetch" and step.inputs:
+                url = step.inputs.get("url")
+                if url:
+                    egress_decision = policy_engine.evaluate_egress(self.context.org_id, url)
+                    if not egress_decision.allowed:
+                        error_msg = f"Policy denied egress '{url}': {egress_decision.reason}"
+                        logger.warning(error_msg)
+                        return StepResult(step_id=step.id, success=False, output=None, error=error_msg)
+
         if self.context.events:
             self.context.events.emit(ObsEvent("executor.tool.call", self.name,
                                               {"tool": step.tool, "inputs": step.inputs}))
@@ -224,10 +309,23 @@ class ExecutorAgent(Agent):
             observability = self.context.config.get("observability")
             if observability:
                 with observability.trace_tool_call(step.tool, step.inputs):
-                    output = await tool.call_async(step.inputs)
+                    if reliability_manager:
+                        output = await reliability_manager.execute_async(
+                            step.tool, lambda: tool.call_async(step.inputs)
+                        )
+                    else:
+                        output = await tool.call_async(step.inputs)
             else:
-                output = await tool.call_async(step.inputs)
+                if reliability_manager:
+                    output = await reliability_manager.execute_async(
+                        step.tool, lambda: tool.call_async(step.inputs)
+                    )
+                else:
+                    output = await tool.call_async(step.inputs)
             success = True
+
+            if replay_store is not None:
+                replay_store.record(step.id, output)
             
             if self.context.events:
                 self.context.events.emit(ObsEvent("executor.tool.result", self.name,

@@ -42,6 +42,10 @@ class StorageBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_runs(self, org_id: Optional[str] = None, limit: int = 1000) -> List[RunMetadata]:
+        raise NotImplementedError
+
+    @abstractmethod
     def append_event(self, event: StreamEnvelope) -> None:
         raise NotImplementedError
 
