@@ -28,3 +28,7 @@ AGENT_SDK_TRACING_ENABLED=true
 AGENT_SDK_OTEL_EXPORTER=otlp
 AGENT_SDK_OTEL_OTLP_ENDPOINT=http://localhost:4318/v1/traces
 ```
+
+## Correlation IDs
+- Responses include `X-Request-Id` and `X-Trace-Id`.
+- Clients may supply `X-Request-Id` to propagate through logs.

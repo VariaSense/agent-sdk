@@ -44,12 +44,14 @@ def test_set_and_get_retention_policy(client):
     response = client.post(
         "/admin/retention",
         headers={"X-API-Key": "test-key"},
-        json={"org_id": "default", "max_events": 50},
+        json={"org_id": "default", "max_events": 50, "max_run_age_days": 7, "max_session_age_days": 30},
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["org_id"] == "default"
     assert payload["max_events"] == 50
+    assert payload["max_run_age_days"] == 7
+    assert payload["max_session_age_days"] == 30
 
     fetched = client.get(
         "/admin/retention",

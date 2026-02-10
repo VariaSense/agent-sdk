@@ -15,6 +15,17 @@ try:
 except Exception:  # pragma: no cover - optional
     redis = None
 
+try:
+    import boto3  # type: ignore
+except Exception:  # pragma: no cover - optional
+    boto3 = None
+
+try:
+    from kafka import KafkaProducer, KafkaConsumer  # type: ignore
+except Exception:  # pragma: no cover - optional
+    KafkaProducer = None
+    KafkaConsumer = None
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -205,6 +216,130 @@ class RedisQueueBackend(QueueBackend):
             mapping={"attempts": job.attempts, "last_error": error},
         )
         self._client.lpush(self._queue_key, job.job_id)
+
+
+class SQSQueueBackend(QueueBackend):
+    def __init__(self, queue_url: str, dlq_url: Optional[str] = None, client=None):
+        if boto3 is None and client is None:
+            raise RuntimeError("boto3 is required for SQSQueueBackend")
+        self._client = client or boto3.client("sqs")
+        self._queue_url = queue_url
+        self._dlq_url = dlq_url
+        self._inflight: Dict[str, str] = {}
+
+    def enqueue(self, payload: Dict[str, Any], max_attempts: int) -> str:
+        body = json.dumps({"payload": payload, "attempts": 0, "max_attempts": max_attempts})
+        response = self._client.send_message(QueueUrl=self._queue_url, MessageBody=body)
+        return response.get("MessageId", f"job_{uuid.uuid4().hex}")
+
+    def claim_next(self) -> Optional[QueueJob]:
+        response = self._client.receive_message(
+            QueueUrl=self._queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = response.get("Messages", [])
+        if not messages:
+            return None
+        message = messages[0]
+        data = json.loads(message.get("Body", "{}"))
+        job_id = message.get("MessageId", f"job_{uuid.uuid4().hex}")
+        self._inflight[job_id] = message.get("ReceiptHandle")
+        return QueueJob(
+            job_id=job_id,
+            payload=data.get("payload", {}),
+            attempts=int(data.get("attempts", 0)),
+            max_attempts=int(data.get("max_attempts", 1)),
+        )
+
+    def mark_done(self, job_id: str) -> None:
+        receipt = self._inflight.pop(job_id, None)
+        if receipt:
+            self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=receipt)
+
+    def mark_failed(self, job: QueueJob, error: str) -> None:
+        receipt = self._inflight.pop(job.job_id, None)
+        if receipt:
+            self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=receipt)
+        if self._dlq_url:
+            body = json.dumps(
+                {
+                    "payload": job.payload,
+                    "attempts": job.attempts,
+                    "max_attempts": job.max_attempts,
+                    "error": error,
+                }
+            )
+            self._client.send_message(QueueUrl=self._dlq_url, MessageBody=body)
+
+    def requeue(self, job: QueueJob, error: str) -> None:
+        receipt = self._inflight.pop(job.job_id, None)
+        if receipt:
+            self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=receipt)
+        body = json.dumps(
+            {
+                "payload": job.payload,
+                "attempts": job.attempts,
+                "max_attempts": job.max_attempts,
+                "last_error": error,
+            }
+        )
+        self._client.send_message(QueueUrl=self._queue_url, MessageBody=body)
+
+
+class KafkaQueueBackend(QueueBackend):
+    def __init__(self, topic: str, client=None, group_id: str = "agent-sdk"):
+        if (KafkaProducer is None or KafkaConsumer is None) and client is None:
+            raise RuntimeError("kafka-python is required for KafkaQueueBackend")
+        self._topic = topic
+        self._producer = client.get("producer") if isinstance(client, dict) else None
+        self._consumer = client.get("consumer") if isinstance(client, dict) else None
+        if self._producer is None:
+            self._producer = KafkaProducer()
+        if self._consumer is None:
+            self._consumer = KafkaConsumer(topic, group_id=group_id, auto_offset_reset="earliest")
+        self._inflight: Dict[str, Any] = {}
+
+    def enqueue(self, payload: Dict[str, Any], max_attempts: int) -> str:
+        job_id = f"job_{uuid.uuid4().hex}"
+        body = json.dumps({"job_id": job_id, "payload": payload, "attempts": 0, "max_attempts": max_attempts})
+        self._producer.send(self._topic, value=body.encode("utf-8"))
+        return job_id
+
+    def claim_next(self) -> Optional[QueueJob]:
+        records = self._consumer.poll(timeout_ms=0)
+        for _, messages in records.items():
+            if not messages:
+                continue
+            message = messages[0]
+            data = json.loads(message.value.decode("utf-8"))
+            job_id = data.get("job_id", f"job_{uuid.uuid4().hex}")
+            self._inflight[job_id] = message
+            return QueueJob(
+                job_id=job_id,
+                payload=data.get("payload", {}),
+                attempts=int(data.get("attempts", 0)),
+                max_attempts=int(data.get("max_attempts", 1)),
+            )
+        return None
+
+    def mark_done(self, job_id: str) -> None:
+        self._inflight.pop(job_id, None)
+
+    def mark_failed(self, job: QueueJob, error: str) -> None:
+        self._inflight.pop(job.job_id, None)
+
+    def requeue(self, job: QueueJob, error: str) -> None:
+        body = json.dumps(
+            {
+                "job_id": job.job_id,
+                "payload": job.payload,
+                "attempts": job.attempts,
+                "max_attempts": job.max_attempts,
+                "last_error": error,
+            }
+        )
+        self._producer.send(self._topic, value=body.encode("utf-8"))
 
 
 class DurableExecutionQueue:

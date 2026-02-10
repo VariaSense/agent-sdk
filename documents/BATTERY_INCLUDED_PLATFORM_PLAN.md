@@ -693,3 +693,103 @@ Estimate: 1 week.
 
 10. Client SDK compatibility checks + version policy docs. **(Completed)**  
 Estimate: 3-5 days.
+
+---
+
+## Phase 7: Enterprise IAM, Compliance, and Ecosystem (optional, 16-24 weeks)
+
+### Objective
+Close remaining enterprise-grade gaps: identity, compliance, tenant isolation, deployment automation, reliability integrations, and developer ecosystem maturity.
+
+### 7.1 Enterprise Identity & Access
+- Service accounts and user lifecycle management.
+- SSO interfaces (OIDC/SAML) with mockable providers.
+- SCIM provisioning endpoints.
+
+Deliverables:
+- `agent_sdk/identity` provider interfaces + mock providers.
+- Admin APIs for users, service accounts, and SCIM.
+
+### 7.2 Tenant Isolation & Compliance
+- Per-tenant encryption keys + optional encryption-at-rest hooks.
+- Data residency metadata and enforcement hooks.
+- Retention controls for runs/sessions (not just events).
+
+Deliverables:
+- Encryption utilities + key storage in control plane.
+- Admin APIs for residency + retention.
+- Storage pruning helpers.
+
+### 7.3 Deployment Automation
+- Helm chart for Kubernetes deployments.
+- SBOM + vulnerability scanning guidance.
+
+Deliverables:
+- `deploy/helm/agent-sdk` chart.
+- Docs for release hardening and scanning.
+
+### 7.4 Reliability & Scheduling Integrations
+- Queue adapters for SQS/Kafka (mockable).
+- Durable scheduler persistence (storage-backed).
+
+Deliverables:
+- Queue backend interfaces + mock adapters.
+- Scheduler persistence + admin APIs.
+
+### 7.5 API Contract & Observability Depth
+- Contract checks for `/v1` API compatibility.
+- Correlation IDs for logs, traces, and responses.
+
+Deliverables:
+- Contract test suite.
+- Request/trace correlation middleware.
+
+### 7.6 Tool Sandboxing & Multi-Agent Depth
+- Tool execution sandbox interface (local + docker stub).
+- Hierarchical agent orchestration with cancellation propagation.
+
+Deliverables:
+- `agent_sdk/sandbox` interface + local implementation.
+- Enhanced orchestration module + tests.
+
+### Exit Criteria
+- SSO/SCIM interfaces available and tested with mock providers.
+- Encryption + residency + retention controls documented and enforced.
+- Helm chart and release hardening docs published.
+- Queue adapters and durable scheduler tests pass.
+- API contract and correlation IDs validated.
+- Tool sandbox and hierarchical orchestration tested.
+
+---
+
+## Phase 7 Backlog (Prioritized, Rough Estimates)
+
+1. Service accounts + user lifecycle admin APIs. **(Completed)**  
+Estimate: 1-2 weeks.
+
+2. SSO (OIDC/SAML) + SCIM interfaces and mock providers. **(Completed)**  
+Estimate: 2-3 weeks.
+
+3. Per-tenant encryption keys + encryption-at-rest hooks. **(Completed)**  
+Estimate: 2-3 weeks.
+
+4. Data residency metadata + retention for runs/sessions. **(Completed)**  
+Estimate: 1-2 weeks.
+
+5. Helm chart for deployment + release hardening docs. **(Completed)**  
+Estimate: 1-2 weeks.
+
+6. Queue adapters for SQS/Kafka (mockable) + docs. **(Completed)**  
+Estimate: 1-2 weeks.
+
+7. Durable scheduler persistence. **(Completed)**  
+Estimate: 1-2 weeks.
+
+8. API contract checks for `/v1` + deprecation enforcement tests. **(Completed)**  
+Estimate: 1 week.
+
+9. Correlation IDs (request/trace) in logs + responses. **(Completed)**  
+Estimate: 3-5 days.
+
+10. Tool sandbox interface + hierarchical orchestration with cancellation. **(Completed)**  
+Estimate: 2-3 weeks.

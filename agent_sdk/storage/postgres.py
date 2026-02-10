@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from agent_sdk.observability.stream_envelope import (
     RunMetadata,
@@ -15,6 +15,7 @@ from agent_sdk.observability.stream_envelope import (
     is_valid_run_transition,
 )
 from agent_sdk.storage.base import StorageBackend
+from agent_sdk.encryption import maybe_encrypt, maybe_decrypt
 
 try:
     import psycopg
@@ -23,13 +24,27 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 class PostgresStorage(StorageBackend):
-    def __init__(self, dsn: str, initialize_schema: bool = True):
+    def __init__(
+        self,
+        dsn: str,
+        initialize_schema: bool = True,
+        encryption_resolver: Optional[Callable[[str], Optional[str]]] = None,
+    ):
         if psycopg is None:
             raise RuntimeError("psycopg is required for PostgresStorage")
         self.dsn = dsn
         self._conn = psycopg.connect(dsn)
+        self._encryption_resolver = encryption_resolver
         if initialize_schema:
             self._init_db()
+
+    def set_encryption_resolver(self, resolver: Optional[Callable[[str], Optional[str]]]) -> None:
+        self._encryption_resolver = resolver
+
+    def _key_for_org(self, org_id: Optional[str]) -> Optional[str]:
+        if not self._encryption_resolver:
+            return None
+        return self._encryption_resolver(org_id or "default")
 
     def _init_db(self) -> None:
         with self._conn.cursor() as cur:
@@ -83,6 +98,7 @@ class PostgresStorage(StorageBackend):
         self._conn.commit()
 
     def create_session(self, session: SessionMetadata) -> None:
+        key = self._key_for_org(session.org_id)
         with self._conn.cursor() as cur:
             cur.execute(
                 """
@@ -96,13 +112,14 @@ class PostgresStorage(StorageBackend):
                     session.user_id,
                     session.created_at,
                     session.updated_at,
-                    json.dumps(session.tags),
-                    json.dumps(session.metadata),
+                    json.dumps(maybe_encrypt(session.tags, key)),
+                    json.dumps(maybe_encrypt(session.metadata, key)),
                 ),
             )
         self._conn.commit()
 
     def update_session(self, session: SessionMetadata) -> None:
+        key = self._key_for_org(session.org_id)
         with self._conn.cursor() as cur:
             cur.execute(
                 """
@@ -120,8 +137,8 @@ class PostgresStorage(StorageBackend):
                     session.user_id,
                     session.created_at,
                     session.updated_at,
-                    json.dumps(session.tags),
-                    json.dumps(session.metadata),
+                    json.dumps(maybe_encrypt(session.tags, key)),
+                    json.dumps(maybe_encrypt(session.metadata, key)),
                     session.session_id,
                 ),
             )
@@ -133,14 +150,15 @@ class PostgresStorage(StorageBackend):
             row = cur.fetchone()
             if not row:
                 return None
+            key = self._key_for_org(row[1] or "default")
             return SessionMetadata(
                 session_id=row[0],
                 org_id=row[1] or "default",
                 user_id=row[2],
                 created_at=row[3],
                 updated_at=row[4],
-                tags=json.loads(row[5] or "{}"),
-                metadata=json.loads(row[6] or "{}"),
+                tags=maybe_decrypt(json.loads(row[5] or "{}"), key),
+                metadata=maybe_decrypt(json.loads(row[6] or "{}"), key),
             )
 
     def list_sessions(self, limit: int = 100) -> List[SessionMetadata]:
@@ -150,20 +168,24 @@ class PostgresStorage(StorageBackend):
                 (limit,),
             )
             rows = cur.fetchall()
-            return [
-                SessionMetadata(
-                    session_id=row[0],
-                    org_id=row[1] or "default",
-                    user_id=row[2],
-                    created_at=row[3],
-                    updated_at=row[4],
-                    tags=json.loads(row[5] or "{}"),
-                    metadata=json.loads(row[6] or "{}"),
+            sessions = []
+            for row in rows:
+                key = self._key_for_org(row[1] or "default")
+                sessions.append(
+                    SessionMetadata(
+                        session_id=row[0],
+                        org_id=row[1] or "default",
+                        user_id=row[2],
+                        created_at=row[3],
+                        updated_at=row[4],
+                        tags=maybe_decrypt(json.loads(row[5] or "{}"), key),
+                        metadata=maybe_decrypt(json.loads(row[6] or "{}"), key),
+                    )
                 )
-                for row in rows
-            ]
+            return sessions
 
     def create_run(self, run: RunMetadata) -> None:
+        key = self._key_for_org(run.org_id)
         with self._conn.cursor() as cur:
             cur.execute(
                 """
@@ -182,13 +204,14 @@ class PostgresStorage(StorageBackend):
                     run.created_at,
                     run.started_at,
                     run.ended_at,
-                    json.dumps(run.tags),
-                    json.dumps(run.metadata),
+                    json.dumps(maybe_encrypt(run.tags, key)),
+                    json.dumps(maybe_encrypt(run.metadata, key)),
                 ),
             )
         self._conn.commit()
 
     def update_run(self, run: RunMetadata) -> None:
+        key = self._key_for_org(run.org_id)
         with self._conn.cursor() as cur:
             cur.execute("SELECT status FROM runs WHERE run_id = %s", (run.run_id,))
             row = cur.fetchone()
@@ -222,8 +245,8 @@ class PostgresStorage(StorageBackend):
                     run.created_at,
                     run.started_at,
                     run.ended_at,
-                    json.dumps(run.tags),
-                    json.dumps(run.metadata),
+                    json.dumps(maybe_encrypt(run.tags, key)),
+                    json.dumps(maybe_encrypt(run.metadata, key)),
                     run.run_id,
                 ),
             )
@@ -235,6 +258,7 @@ class PostgresStorage(StorageBackend):
             row = cur.fetchone()
             if not row:
                 return None
+            key = self._key_for_org(row[3] or "default")
             return RunMetadata(
                 run_id=row[0],
                 session_id=row[1],
@@ -245,11 +269,12 @@ class PostgresStorage(StorageBackend):
                 created_at=row[6],
                 started_at=row[7],
                 ended_at=row[8],
-                tags=json.loads(row[9] or "{}"),
-                metadata=json.loads(row[10] or "{}"),
+                tags=maybe_decrypt(json.loads(row[9] or "{}"), key),
+                metadata=maybe_decrypt(json.loads(row[10] or "{}"), key),
             )
 
     def append_event(self, event: StreamEnvelope) -> None:
+        key = self._key_for_org(event.metadata.get("org_id", "default"))
         with self._conn.cursor() as cur:
             cur.execute(
                 """
@@ -264,11 +289,11 @@ class PostgresStorage(StorageBackend):
                     event.metadata.get("org_id", "default"),
                     event.stream.value,
                     event.event,
-                    json.dumps(event.payload),
+                    json.dumps(maybe_encrypt(event.payload, key)),
                     event.timestamp,
                     event.seq,
                     event.status,
-                    json.dumps(event.metadata),
+                    json.dumps(maybe_encrypt(event.metadata, key)),
                 ),
             )
         self._conn.commit()
@@ -283,20 +308,23 @@ class PostgresStorage(StorageBackend):
                 (run_id, limit),
             )
             rows = cur.fetchall()
-            return [
-                StreamEnvelope(
-                    run_id=row[0],
-                    session_id=row[1],
-                    stream=StreamChannel(row[3]),
-                    event=row[4],
-                    payload=json.loads(row[5] or "{}"),
-                    timestamp=row[6],
-                    seq=row[7],
-                    status=row[8],
-                    metadata=json.loads(row[9] or "{}"),
+            events = []
+            for row in rows:
+                key = self._key_for_org(row[2] or "default")
+                events.append(
+                    StreamEnvelope(
+                        run_id=row[0],
+                        session_id=row[1],
+                        stream=StreamChannel(row[3]),
+                        event=row[4],
+                        payload=maybe_decrypt(json.loads(row[5] or "{}"), key),
+                        timestamp=row[6],
+                        seq=row[7],
+                        status=row[8],
+                        metadata=maybe_decrypt(json.loads(row[9] or "{}"), key),
+                    )
                 )
-                for row in rows
-            ]
+            return events
 
     def list_events_from(
         self,
@@ -316,20 +344,23 @@ class PostgresStorage(StorageBackend):
                 (run_id, from_seq, limit),
             )
             rows = cur.fetchall()
-            return [
-                StreamEnvelope(
-                    run_id=row[0],
-                    session_id=row[1],
-                    stream=StreamChannel(row[3]),
-                    event=row[4],
-                    payload=json.loads(row[5] or "{}"),
-                    timestamp=row[6],
-                    seq=row[7],
-                    status=row[8],
-                    metadata=json.loads(row[9] or "{}"),
+            events = []
+            for row in rows:
+                key = self._key_for_org(row[2] or "default")
+                events.append(
+                    StreamEnvelope(
+                        run_id=row[0],
+                        session_id=row[1],
+                        stream=StreamChannel(row[3]),
+                        event=row[4],
+                        payload=maybe_decrypt(json.loads(row[5] or "{}"), key),
+                        timestamp=row[6],
+                        seq=row[7],
+                        status=row[8],
+                        metadata=maybe_decrypt(json.loads(row[9] or "{}"), key),
+                    )
                 )
-                for row in rows
-            ]
+            return events
 
     def delete_events(self, run_id: str, before_seq: Optional[int] = None) -> int:
         with self._conn.cursor() as cur:
@@ -396,8 +427,32 @@ class PostgresStorage(StorageBackend):
                     ),
                 )
                 count += 1
-        self._conn.commit()
-        return count
+            self._conn.commit()
+            return count
+
+    def prune_runs(self, org_id: str, before_timestamp: str) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT run_id FROM runs WHERE org_id = %s AND created_at < %s",
+                (org_id, before_timestamp),
+            )
+            rows = cur.fetchall()
+            count = 0
+            for row in rows:
+                count += self.delete_run(row[0])
+            return count
+
+    def prune_sessions(self, org_id: str, before_timestamp: str) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT session_id FROM sessions WHERE org_id = %s AND created_at < %s",
+                (org_id, before_timestamp),
+            )
+            rows = cur.fetchall()
+            count = 0
+            for row in rows:
+                count += self.delete_session(row[0])
+            return count
 
     def delete_run(self, run_id: str) -> int:
         with self._conn.cursor() as cur:

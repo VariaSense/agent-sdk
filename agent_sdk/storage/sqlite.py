@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from datetime import datetime, timezone
 
@@ -19,12 +19,22 @@ from agent_sdk.observability.stream_envelope import (
     is_valid_run_transition,
 )
 from agent_sdk.storage.base import StorageBackend
+from agent_sdk.encryption import maybe_encrypt, maybe_decrypt
 
 
 class SQLiteStorage(StorageBackend):
-    def __init__(self, path: str):
+    def __init__(self, path: str, encryption_resolver: Optional[Callable[[str], Optional[str]]] = None):
         self.path = path
+        self._encryption_resolver = encryption_resolver
         self._init_db()
+
+    def set_encryption_resolver(self, resolver: Optional[Callable[[str], Optional[str]]]) -> None:
+        self._encryption_resolver = resolver
+
+    def _key_for_org(self, org_id: Optional[str]) -> Optional[str]:
+        if not self._encryption_resolver:
+            return None
+        return self._encryption_resolver(org_id or "default")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
@@ -93,6 +103,7 @@ class SQLiteStorage(StorageBackend):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
     def create_session(self, session: SessionMetadata) -> None:
+        key = self._key_for_org(session.org_id)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -106,12 +117,13 @@ class SQLiteStorage(StorageBackend):
                     session.user_id,
                     session.created_at,
                     session.updated_at,
-                    json.dumps(session.tags),
-                    json.dumps(session.metadata),
+                    json.dumps(maybe_encrypt(session.tags, key)),
+                    json.dumps(maybe_encrypt(session.metadata, key)),
                 ),
             )
 
     def update_session(self, session: SessionMetadata) -> None:
+        key = self._key_for_org(session.org_id)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -129,8 +141,8 @@ class SQLiteStorage(StorageBackend):
                     session.user_id,
                     session.created_at,
                     session.updated_at,
-                    json.dumps(session.tags),
-                    json.dumps(session.metadata),
+                    json.dumps(maybe_encrypt(session.tags, key)),
+                    json.dumps(maybe_encrypt(session.metadata, key)),
                     session.session_id,
                 ),
             )
@@ -143,14 +155,15 @@ class SQLiteStorage(StorageBackend):
             ).fetchone()
             if not row:
                 return None
+            key = self._key_for_org(row["org_id"] or "default")
             return SessionMetadata(
                 session_id=row["session_id"],
                 org_id=row["org_id"] or "default",
                 user_id=row["user_id"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
-                tags=json.loads(row["tags_json"] or "{}"),
-                metadata=json.loads(row["metadata_json"] or "{}"),
+                tags=maybe_decrypt(json.loads(row["tags_json"] or "{}"), key),
+                metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
             )
 
     def list_sessions(self, limit: int = 100) -> List[SessionMetadata]:
@@ -161,6 +174,7 @@ class SQLiteStorage(StorageBackend):
             ).fetchall()
             sessions = []
             for row in rows:
+                key = self._key_for_org(row["org_id"] or "default")
                 sessions.append(
                     SessionMetadata(
                         session_id=row["session_id"],
@@ -168,13 +182,14 @@ class SQLiteStorage(StorageBackend):
                         user_id=row["user_id"],
                         created_at=row["created_at"],
                         updated_at=row["updated_at"],
-                        tags=json.loads(row["tags_json"] or "{}"),
-                        metadata=json.loads(row["metadata_json"] or "{}"),
+                        tags=maybe_decrypt(json.loads(row["tags_json"] or "{}"), key),
+                        metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
                     )
                 )
             return sessions
 
     def create_run(self, run: RunMetadata) -> None:
+        key = self._key_for_org(run.org_id)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -193,12 +208,13 @@ class SQLiteStorage(StorageBackend):
                     run.created_at,
                     run.started_at,
                     run.ended_at,
-                    json.dumps(run.tags),
-                    json.dumps(run.metadata),
+                    json.dumps(maybe_encrypt(run.tags, key)),
+                    json.dumps(maybe_encrypt(run.metadata, key)),
                 ),
             )
 
     def update_run(self, run: RunMetadata) -> None:
+        key = self._key_for_org(run.org_id)
         with self._connect() as conn:
             current = conn.execute(
                 "SELECT status FROM runs WHERE run_id = ?",
@@ -234,8 +250,8 @@ class SQLiteStorage(StorageBackend):
                     run.created_at,
                     run.started_at,
                     run.ended_at,
-                    json.dumps(run.tags),
-                    json.dumps(run.metadata),
+                    json.dumps(maybe_encrypt(run.tags, key)),
+                    json.dumps(maybe_encrypt(run.metadata, key)),
                     run.run_id,
                 ),
             )
@@ -248,6 +264,7 @@ class SQLiteStorage(StorageBackend):
             ).fetchone()
             if not row:
                 return None
+            key = self._key_for_org(row["org_id"] or "default")
             return RunMetadata(
                 run_id=row["run_id"],
                 session_id=row["session_id"],
@@ -258,11 +275,12 @@ class SQLiteStorage(StorageBackend):
                 created_at=row["created_at"],
                 started_at=row["started_at"],
                 ended_at=row["ended_at"],
-                tags=json.loads(row["tags_json"] or "{}"),
-                metadata=json.loads(row["metadata_json"] or "{}"),
+                tags=maybe_decrypt(json.loads(row["tags_json"] or "{}"), key),
+                metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
             )
 
     def append_event(self, event: StreamEnvelope) -> None:
+        key = self._key_for_org(event.metadata.get("org_id", "default"))
         with self._connect() as conn:
             conn.execute(
                 """
@@ -277,11 +295,11 @@ class SQLiteStorage(StorageBackend):
                     event.metadata.get("org_id", "default"),
                     event.stream.value,
                     event.event,
-                    json.dumps(event.payload),
+                    json.dumps(maybe_encrypt(event.payload, key)),
                     event.timestamp,
                     event.seq,
                     event.status,
-                    json.dumps(event.metadata),
+                    json.dumps(maybe_encrypt(event.metadata, key)),
                 ),
             )
 
@@ -298,17 +316,18 @@ class SQLiteStorage(StorageBackend):
             ).fetchall()
             events = []
             for row in rows:
+                key = self._key_for_org(row["org_id"] or "default")
                 events.append(
                     StreamEnvelope(
                         run_id=row["run_id"],
                         session_id=row["session_id"],
                         stream=StreamChannel(row["stream"]),
                         event=row["event"],
-                        payload=json.loads(row["payload_json"] or "{}"),
+                        payload=maybe_decrypt(json.loads(row["payload_json"] or "{}"), key),
                         timestamp=row["timestamp"],
                         seq=row["seq"],
                         status=row["status"],
-                        metadata=json.loads(row["metadata_json"] or "{}"),
+                        metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
                     )
                 )
             return events
@@ -333,17 +352,18 @@ class SQLiteStorage(StorageBackend):
             ).fetchall()
             events = []
             for row in rows:
+                key = self._key_for_org(row["org_id"] or "default")
                 events.append(
                     StreamEnvelope(
                         run_id=row["run_id"],
                         session_id=row["session_id"],
                         stream=StreamChannel(row["stream"]),
                         event=row["event"],
-                        payload=json.loads(row["payload_json"] or "{}"),
+                        payload=maybe_decrypt(json.loads(row["payload_json"] or "{}"), key),
                         timestamp=row["timestamp"],
                         seq=row["seq"],
                         status=row["status"],
-                        metadata=json.loads(row["metadata_json"] or "{}"),
+                        metadata=maybe_decrypt(json.loads(row["metadata_json"] or "{}"), key),
                     )
                 )
             return events
@@ -361,6 +381,28 @@ class SQLiteStorage(StorageBackend):
                 (run_id, before_seq),
             )
             return cur.rowcount
+
+    def prune_runs(self, org_id: str, before_timestamp: str) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM runs WHERE org_id = ? AND created_at < ?",
+                (org_id, before_timestamp),
+            ).fetchall()
+            count = 0
+            for row in rows:
+                count += self.delete_run(row["run_id"])
+            return count
+
+    def prune_sessions(self, org_id: str, before_timestamp: str) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT session_id FROM sessions WHERE org_id = ? AND created_at < ?",
+                (org_id, before_timestamp),
+            ).fetchall()
+            count = 0
+            for row in rows:
+                count += self.delete_session(row["session_id"])
+            return count
 
     def recover_in_flight_runs(self) -> int:
         now = datetime.now(timezone.utc).isoformat()

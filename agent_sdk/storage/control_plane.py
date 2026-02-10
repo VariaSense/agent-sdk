@@ -35,10 +35,13 @@ class ControlPlaneBackend:
     def create_user(self, org_id: str, user: User) -> User:
         raise NotImplementedError
 
-    def list_users(self, org_id: Optional[str] = None) -> List[User]:
+    def list_users(self, org_id: Optional[str] = None, active_only: bool = False) -> List[User]:
         raise NotImplementedError
 
     def create_api_key(self, record: APIKeyRecord) -> APIKeyRecord:
+        raise NotImplementedError
+
+    def deactivate_user(self, user_id: str) -> bool:
         raise NotImplementedError
 
     def list_api_keys(self, org_id: Optional[str] = None) -> List[APIKeyRecord]:
@@ -57,6 +60,18 @@ class ControlPlaneBackend:
         raise NotImplementedError
 
     def get_retention_policy(self, org_id: str) -> Optional[RetentionPolicyConfig]:
+        raise NotImplementedError
+
+    def set_residency(self, org_id: str, region: Optional[str]) -> None:
+        raise NotImplementedError
+
+    def get_residency(self, org_id: str) -> Optional[str]:
+        raise NotImplementedError
+
+    def set_encryption_key(self, org_id: str, key: Optional[str]) -> None:
+        raise NotImplementedError
+
+    def get_encryption_key(self, org_id: str) -> Optional[str]:
         raise NotImplementedError
 
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
@@ -86,7 +101,9 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     created_at TEXT,
                     quotas_json TEXT,
                     model_policy_json TEXT,
-                    retention_json TEXT
+                    retention_json TEXT,
+                    residency TEXT,
+                    encryption_key TEXT
                 )
                 """
             )
@@ -96,7 +113,9 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     user_id TEXT PRIMARY KEY,
                     org_id TEXT,
                     name TEXT,
-                    created_at TEXT
+                    created_at TEXT,
+                    active INTEGER,
+                    is_service_account INTEGER
                 )
                 """
             )
@@ -123,6 +142,10 @@ class SQLiteControlPlane(ControlPlaneBackend):
             self._ensure_column(conn, "api_keys", "rate_limit_per_minute", "INTEGER")
             self._ensure_column(conn, "api_keys", "ip_allowlist_json", "TEXT")
             self._ensure_column(conn, "orgs", "retention_json", "TEXT")
+            self._ensure_column(conn, "users", "active", "INTEGER")
+            self._ensure_column(conn, "users", "is_service_account", "INTEGER")
+            self._ensure_column(conn, "orgs", "residency", "TEXT")
+            self._ensure_column(conn, "orgs", "encryption_key", "TEXT")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
@@ -140,10 +163,19 @@ class SQLiteControlPlane(ControlPlaneBackend):
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json, retention_json, residency, encryption_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (org.org_id, org.name, org.created_at, json.dumps({}), json.dumps({})),
+                (
+                    org.org_id,
+                    org.name,
+                    org.created_at,
+                    json.dumps({}),
+                    json.dumps({}),
+                    json.dumps({}),
+                    None,
+                    None,
+                ),
             )
         return org
 
@@ -167,23 +199,47 @@ class SQLiteControlPlane(ControlPlaneBackend):
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO users (user_id, org_id, name, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO users (user_id, org_id, name, created_at, active, is_service_account)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user.user_id, user.org_id, user.name, user.created_at),
+                (
+                    user.user_id,
+                    user.org_id,
+                    user.name,
+                    user.created_at,
+                    1 if user.active else 0,
+                    1 if user.is_service_account else 0,
+                ),
             )
         return user
 
-    def list_users(self, org_id: Optional[str] = None) -> List[User]:
+    def list_users(self, org_id: Optional[str] = None, active_only: bool = False) -> List[User]:
         with self._connect() as conn:
             if org_id is None:
                 rows = conn.execute("SELECT * FROM users").fetchall()
             else:
                 rows = conn.execute("SELECT * FROM users WHERE org_id = ?", (org_id,)).fetchall()
-            return [
-                User(user_id=row["user_id"], org_id=row["org_id"], name=row["name"], created_at=row["created_at"])
+            users = [
+                User(
+                    user_id=row["user_id"],
+                    org_id=row["org_id"],
+                    name=row["name"],
+                    created_at=row["created_at"],
+                    active=bool(row["active"]) if row["active"] is not None else True,
+                    is_service_account=bool(row["is_service_account"])
+                    if row["is_service_account"] is not None
+                    else False,
+                )
                 for row in rows
             ]
+            if active_only:
+                users = [user for user in users if user.active]
+            return users
+
+    def deactivate_user(self, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE users SET active = 0 WHERE user_id = ?", (user_id,))
+            return cur.rowcount > 0
 
     def create_api_key(self, record: APIKeyRecord) -> APIKeyRecord:
         self.ensure_org(record.org_id)
@@ -275,6 +331,30 @@ class SQLiteControlPlane(ControlPlaneBackend):
             data = json.loads(row["retention_json"] or "{}")
             return RetentionPolicyConfig(**data)
 
+    def set_residency(self, org_id: str, region: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        with self._connect() as conn:
+            conn.execute("UPDATE orgs SET residency = ? WHERE org_id = ?", (region, org_id))
+
+    def get_residency(self, org_id: str) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT residency FROM orgs WHERE org_id = ?", (org_id,)).fetchone()
+            if not row:
+                return None
+            return row["residency"]
+
+    def set_encryption_key(self, org_id: str, key: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        with self._connect() as conn:
+            conn.execute("UPDATE orgs SET encryption_key = ? WHERE org_id = ?", (key, org_id))
+
+    def get_encryption_key(self, org_id: str) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT encryption_key FROM orgs WHERE org_id = ?", (org_id,)).fetchone()
+            if not row:
+                return None
+            return row["encryption_key"]
+
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
         self.ensure_org(org_id)
         with self._connect() as conn:
@@ -311,7 +391,9 @@ class PostgresControlPlane(ControlPlaneBackend):
                     created_at TEXT,
                     quotas_json JSONB,
                     model_policy_json JSONB,
-                    retention_json JSONB
+                    retention_json JSONB,
+                    residency TEXT,
+                    encryption_key TEXT
                 );
                 """
             )
@@ -321,7 +403,9 @@ class PostgresControlPlane(ControlPlaneBackend):
                     user_id TEXT PRIMARY KEY,
                     org_id TEXT,
                     name TEXT,
-                    created_at TEXT
+                    created_at TEXT,
+                    active BOOLEAN,
+                    is_service_account BOOLEAN
                 );
                 """
             )
@@ -353,10 +437,10 @@ class PostgresControlPlane(ControlPlaneBackend):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO orgs (org_id, name, created_at, quotas_json, model_policy_json, retention_json, residency, encryption_key)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (org.org_id, org.name, org.created_at, json.dumps({}), json.dumps({})),
+                (org.org_id, org.name, org.created_at, json.dumps({}), json.dumps({}), json.dumps({}), None, None),
             )
         self._conn.commit()
         return org
@@ -380,15 +464,22 @@ class PostgresControlPlane(ControlPlaneBackend):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (user_id, org_id, name, created_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO users (user_id, org_id, name, created_at, active, is_service_account)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (user.user_id, user.org_id, user.name, user.created_at),
+                (
+                    user.user_id,
+                    user.org_id,
+                    user.name,
+                    user.created_at,
+                    user.active,
+                    user.is_service_account,
+                ),
             )
         self._conn.commit()
         return user
 
-    def list_users(self, org_id: Optional[str] = None) -> List[User]:
+    def list_users(self, org_id: Optional[str] = None, active_only: bool = False) -> List[User]:
         with self._conn.cursor() as cur:
             if org_id is None:
                 cur.execute("SELECT * FROM users")
@@ -396,7 +487,27 @@ class PostgresControlPlane(ControlPlaneBackend):
             else:
                 cur.execute("SELECT * FROM users WHERE org_id = %s", (org_id,))
                 rows = cur.fetchall()
-            return [User(user_id=row[0], org_id=row[1], name=row[2], created_at=row[3]) for row in rows]
+            users = [
+                User(
+                    user_id=row[0],
+                    org_id=row[1],
+                    name=row[2],
+                    created_at=row[3],
+                    active=bool(row[4]) if row[4] is not None else True,
+                    is_service_account=bool(row[5]) if row[5] is not None else False,
+                )
+                for row in rows
+            ]
+            if active_only:
+                users = [user for user in users if user.active]
+            return users
+
+    def deactivate_user(self, user_id: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("UPDATE users SET active = FALSE WHERE user_id = %s", (user_id,))
+            updated = cur.rowcount > 0
+        self._conn.commit()
+        return updated
 
     def create_api_key(self, record: APIKeyRecord) -> APIKeyRecord:
         self.ensure_org(record.org_id)
@@ -493,6 +604,34 @@ class PostgresControlPlane(ControlPlaneBackend):
             if not row or not row[0]:
                 return None
             return RetentionPolicyConfig(**row[0])
+
+    def set_residency(self, org_id: str, region: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        with self._conn.cursor() as cur:
+            cur.execute("UPDATE orgs SET residency = %s WHERE org_id = %s", (region, org_id))
+        self._conn.commit()
+
+    def get_residency(self, org_id: str) -> Optional[str]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT residency FROM orgs WHERE org_id = %s", (org_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return row[0]
+
+    def set_encryption_key(self, org_id: str, key: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        with self._conn.cursor() as cur:
+            cur.execute("UPDATE orgs SET encryption_key = %s WHERE org_id = %s", (key, org_id))
+        self._conn.commit()
+
+    def get_encryption_key(self, org_id: str) -> Optional[str]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT encryption_key FROM orgs WHERE org_id = %s", (org_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return row[0]
 
     def set_model_policy(self, org_id: str, policy: ModelPolicy) -> None:
         self.ensure_org(org_id)

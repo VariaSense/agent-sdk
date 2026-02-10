@@ -33,6 +33,7 @@ class MessageType(str, Enum):
     CONSENSUS_VOTE = "consensus_vote"
     CONTEXT_UPDATE = "context_update"
     ERROR = "error"
+    CANCEL = "cancel"
 
 
 class AgentRole(str, Enum):
@@ -51,6 +52,25 @@ class ConsensusAlgorithm(str, Enum):
     UNANIMOUS = "unanimous"  # 100%
     WEIGHTED = "weighted"  # Based on agent weights
     QUORUM = "quorum"  # Minimum percentage
+
+
+class TaskStatus(str, Enum):
+    """Hierarchical task status."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+    CANCELED = "canceled"
+
+
+@dataclass
+class TaskNode:
+    task_id: str
+    parent_id: Optional[str]
+    assigned_agents: List[str]
+    status: TaskStatus = TaskStatus.PENDING
+    children: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -332,6 +352,7 @@ class MultiAgentOrchestrator:
         self.router = MessageRouter()
         self.shared_context: Optional[SharedContext] = None
         self.active_consensus: Dict[str, ConsensusVote] = {}
+        self.tasks: Dict[str, TaskNode] = {}
         self.created_at = datetime.now()
 
     def register_agent(
@@ -372,6 +393,34 @@ class MultiAgentOrchestrator:
         )
         logger.info(f"Created shared context: {context_id}")
         return self.shared_context
+
+    def create_task(self, task_id: str, assigned_agents: List[str], parent_id: Optional[str] = None) -> TaskNode:
+        """Register a hierarchical task."""
+        node = TaskNode(task_id=task_id, parent_id=parent_id, assigned_agents=assigned_agents)
+        self.tasks[task_id] = node
+        if parent_id and parent_id in self.tasks:
+            self.tasks[parent_id].children.add(task_id)
+        return node
+
+    def set_task_status(self, task_id: str, status: TaskStatus) -> None:
+        if task_id in self.tasks:
+            self.tasks[task_id].status = status
+
+    def cancel_task(self, task_id: str, reason: str = "canceled") -> None:
+        """Cancel a task and propagate to children."""
+        node = self.tasks.get(task_id)
+        if not node:
+            return
+        node.status = TaskStatus.CANCELED
+        if node.assigned_agents:
+            self.send_message(
+                "system",
+                node.assigned_agents,
+                MessageType.CANCEL,
+                {"task_id": task_id, "reason": reason},
+            )
+        for child_id in list(node.children):
+            self.cancel_task(child_id, reason=reason)
 
     def send_message(
         self,

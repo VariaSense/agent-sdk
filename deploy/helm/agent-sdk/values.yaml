@@ -1,0 +1,28 @@
+replicaCount: 2
+
+image:
+  repository: agent-sdk
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+env:
+  AGENT_SDK_TRACING_ENABLED: "true"
+  AGENT_SDK_PROMETHEUS_ENABLED: "true"
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70

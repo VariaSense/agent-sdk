@@ -1,6 +1,8 @@
 import logging
 import asyncio
 import os
+from datetime import datetime, timezone, timedelta
+import secrets
 from dataclasses import asdict
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
@@ -39,6 +41,11 @@ from agent_sdk.validators import (
     QuotaUpdateRequest,
     RetentionPolicyRequest,
     ScheduleCreateRequest,
+    UserCreateRequest,
+    ServiceAccountCreateRequest,
+    AuthValidateRequest,
+    ResidencyRequest,
+    EncryptionKeyRequest,
     PromptPolicyCreateRequest,
 )
 from agent_sdk.exceptions import ConfigError, AgentSDKException
@@ -61,7 +68,13 @@ from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_l
 from agent_sdk.core.streaming import TokenCounter
 from agent_sdk.core.retry import RetryConfig, retry_with_backoff
 from agent_sdk.execution.queue import ExecutionQueue
-from agent_sdk.execution.durable_queue import DurableExecutionQueue, SQLiteQueueBackend, RedisQueueBackend
+from agent_sdk.execution.durable_queue import (
+    DurableExecutionQueue,
+    SQLiteQueueBackend,
+    RedisQueueBackend,
+    SQSQueueBackend,
+    KafkaQueueBackend,
+)
 from agent_sdk.policies.prompt_registry import PromptPolicyRegistry
 from agent_sdk.server.idempotency import IdempotencyStore
 from agent_sdk.server.run_store import RunEventStore
@@ -72,7 +85,10 @@ from agent_sdk.server.multi_tenant import MultiTenantStore, QuotaLimits, Retenti
 from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlPlane
 from agent_sdk.server.channels import handle_web_channel
 from agent_sdk.server.admin_ui import ADMIN_HTML
-from agent_sdk.server.scheduler import Scheduler
+from agent_sdk.server.scheduler import Scheduler, SQLiteSchedulerStore
+from agent_sdk.identity.providers import OIDCProvider, SAMLProvider, MockIdentityProvider
+from agent_sdk.encryption import generate_key
+from agent_sdk.sandbox import LocalToolSandbox, DockerToolSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +120,16 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         if observability:
             planner.context.config["observability"] = observability
             executor.context.config["observability"] = observability
+        sandbox_mode = os.getenv("AGENT_SDK_TOOL_SANDBOX", "").lower()
+        sandbox_timeout = float(os.getenv("AGENT_SDK_TOOL_SANDBOX_TIMEOUT", "10"))
+        sandbox = None
+        if sandbox_mode == "local":
+            sandbox = LocalToolSandbox(timeout_seconds=sandbox_timeout)
+        elif sandbox_mode == "docker":
+            sandbox = DockerToolSandbox()
+        if sandbox:
+            planner.context.config["tool_sandbox"] = sandbox
+            executor.context.config["tool_sandbox"] = sandbox
         prometheus_enabled = os.getenv("AGENT_SDK_PROMETHEUS_ENABLED", "").lower() in {
             "1",
             "true",
@@ -159,6 +185,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             tenant_store.set_model_catalog(load_model_names(config_path))
         except Exception:
             pass
+        encryption_enabled = os.getenv("AGENT_SDK_ENCRYPTION_ENABLED", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if encryption_enabled:
+            storage.set_encryption_resolver(lambda org_id: tenant_store.get_encryption_key(org_id))
         run_store = RunEventStore(
             max_events=stream_max_events,
             queue_size=stream_queue_size,
@@ -172,6 +206,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             tenant_store=tenant_store,
         )
         prompt_registry = PromptPolicyRegistry()
+        idp_provider = os.getenv("AGENT_SDK_IDP_PROVIDER", "mock").lower()
+        if idp_provider == "oidc":
+            identity_provider = OIDCProvider()
+        elif idp_provider == "saml":
+            identity_provider = SAMLProvider()
+        else:
+            identity_provider = MockIdentityProvider()
         execution_mode = os.getenv("AGENT_SDK_EXECUTION_MODE", "direct").lower()
         queue_backend = os.getenv("AGENT_SDK_QUEUE_BACKEND", "memory").lower()
         durable_queue = None
@@ -193,6 +234,33 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 redis_url = os.getenv("AGENT_SDK_REDIS_URL", "redis://localhost:6379/0")
                 durable_queue = DurableExecutionQueue(
                     backend=RedisQueueBackend(redis_url),
+                    handler=lambda payload: runtime.run_async(
+                        payload["task"],
+                        session_id=payload["session_id"],
+                        run_id=payload["run_id"],
+                    ),
+                    poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
+                    max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
+                )
+            elif queue_backend == "sqs":
+                queue_url = os.getenv("AGENT_SDK_SQS_QUEUE_URL")
+                if not queue_url:
+                    raise ConfigError("AGENT_SDK_SQS_QUEUE_URL is required for SQS backend")
+                dlq_url = os.getenv("AGENT_SDK_SQS_DLQ_URL")
+                durable_queue = DurableExecutionQueue(
+                    backend=SQSQueueBackend(queue_url, dlq_url=dlq_url),
+                    handler=lambda payload: runtime.run_async(
+                        payload["task"],
+                        session_id=payload["session_id"],
+                        run_id=payload["run_id"],
+                    ),
+                    poll_interval=float(os.getenv("AGENT_SDK_QUEUE_POLL_INTERVAL", "0.2")),
+                    max_attempts=int(os.getenv("AGENT_SDK_QUEUE_MAX_ATTEMPTS", "3")),
+                )
+            elif queue_backend == "kafka":
+                topic = os.getenv("AGENT_SDK_KAFKA_TOPIC", "agent-sdk-jobs")
+                durable_queue = DurableExecutionQueue(
+                    backend=KafkaQueueBackend(topic),
                     handler=lambda payload: runtime.run_async(
                         payload["task"],
                         session_id=payload["session_id"],
@@ -293,6 +361,14 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             return info.key, info.org_id
         return "unknown", "default"
 
+    def _verify_scim_token(request: Request) -> None:
+        token = os.getenv("AGENT_SDK_SCIM_TOKEN")
+        if not token:
+            raise HTTPException(status_code=503, detail="SCIM token not configured")
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header != f"Bearer {token}":
+            raise HTTPException(status_code=401, detail="Invalid SCIM token")
+
     async def _run_with_policies(task: str, session_id: str, run_id: str):
         async def _invoke():
             return await runtime.run_async(task, session_id=session_id, run_id=run_id)
@@ -316,8 +392,29 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             return await execution_queue.submit(_invoke_with_retry)
         return await _invoke_with_retry()
 
+    def _assert_residency(org_id: str) -> None:
+        server_region = os.getenv("AGENT_SDK_DATA_REGION")
+        required = tenant_store.get_residency(org_id)
+        if required and server_region and required != server_region:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Data residency mismatch: org requires {required}, server region {server_region}",
+            )
+
+    def _apply_retention(org_id: str) -> None:
+        policy = tenant_store.get_retention_policy(org_id)
+        now = datetime.now(timezone.utc)
+        if policy.max_run_age_days:
+            cutoff = now - timedelta(days=policy.max_run_age_days)
+            storage.prune_runs(org_id, cutoff.isoformat())
+        if policy.max_session_age_days:
+            cutoff = now - timedelta(days=policy.max_session_age_days)
+            storage.prune_sessions(org_id, cutoff.isoformat())
+
     async def _submit_scheduled(entry):
         org_id = entry.org_id
+        _assert_residency(org_id)
+        _apply_retention(org_id)
         allowed, reason = tenant_store.check_quota(org_id, new_session=True, new_run=True)
         if not allowed:
             logger.warning("Scheduled run blocked for org %s: %s", org_id, reason)
@@ -329,6 +426,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         tenant_store.record_session(org_id)
         requested_model = planner.context.model_config.model_id if planner.context.model_config else None
         resolved_model = tenant_store.resolve_model(org_id, requested_model)
+        scheduled_metadata = {
+            "request_id": f"schedule_{entry.schedule_id}",
+            "trace_id": entry.schedule_id,
+            "scheduled": True,
+            "schedule_id": entry.schedule_id,
+        }
         run_meta = RunMetadata(
             run_id=run_id,
             session_id=session_id,
@@ -336,7 +439,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             org_id=org_id,
             status=RunStatus.RUNNING,
             model=resolved_model,
-            metadata={"scheduled": True, "schedule_id": entry.schedule_id},
+            metadata=scheduled_metadata,
         )
         storage.create_run(run_meta)
         tenant_store.record_run(org_id)
@@ -349,7 +452,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
                 model=resolved_model,
-                metadata={"scheduled": True, "schedule_id": entry.schedule_id},
+                metadata=scheduled_metadata,
             )
             storage.update_run(run_meta)
             token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
@@ -363,13 +466,18 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.ERROR,
                 model=resolved_model,
-                metadata={"scheduled": True, "schedule_id": entry.schedule_id, "error": str(exc)},
+                metadata={**scheduled_metadata, "error": str(exc)},
             )
             storage.update_run(run_meta)
 
+    scheduler_store = None
+    scheduler_db = os.getenv("AGENT_SDK_SCHEDULER_DB_PATH")
+    if scheduler_db:
+        scheduler_store = SQLiteSchedulerStore(scheduler_db)
     scheduler = Scheduler(
         _submit_scheduled,
         poll_interval=float(os.getenv("AGENT_SDK_SCHEDULER_POLL_INTERVAL", "1.0")),
+        store=scheduler_store,
     )
     app.state.scheduler = scheduler
 
@@ -400,6 +508,17 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         response.headers["X-API-Version"] = "v1"
         if not versioned and not original_path.startswith(public_paths):
             response.headers["X-API-Deprecated"] = "Use /v1 prefix for API requests"
+        return response
+
+    @app.middleware("http")
+    async def correlation_id_middleware(request: Request, call_next):
+        request_id = request.headers.get("X-Request-Id") or f"req_{secrets.token_hex(8)}"
+        trace_id = request.headers.get("X-Trace-Id") or request_id
+        request.state.request_id = request_id
+        request.state.trace_id = trace_id
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Trace-Id"] = trace_id
         return response
 
     @app.middleware("http")
@@ -458,6 +577,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.durable_queue = durable_queue
     app.state.retry_config = retry_config
     app.state.idempotency_store = idempotency_store
+    app.state.identity_provider = identity_provider
 
     @app.on_event("startup")
     async def _start_workers():
@@ -515,6 +635,21 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         payload = generate_latest(app.state.prometheus_registry)
         return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
+    @app.post("/auth/validate", tags=["Auth"])
+    async def validate_identity(req: AuthValidateRequest):
+        """Validate identity token via configured provider."""
+        try:
+            claims = app.state.identity_provider.validate(req.token)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return {
+            "subject": claims.subject,
+            "email": claims.email,
+            "issuer": claims.issuer,
+            "groups": claims.groups,
+            "raw": claims.raw,
+        }
+
     # Task Execution Endpoint
     @app.post(
         "/run",
@@ -534,6 +669,8 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         try:
             logger.info(f"Executing task: {req.task[:100]}")
             org_id = _org_id_from_request(request)
+            _assert_residency(org_id)
+            _apply_retention(org_id)
             idempotency_key = request.headers.get("Idempotency-Key")
             if idempotency_key:
                 cached = idempotency_store.get(idempotency_key)
@@ -553,6 +690,10 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
 
             requested_model = planner.context.model_config.model_id if planner.context.model_config else None
             resolved_model = tenant_store.resolve_model(org_id, requested_model)
+            run_metadata = {
+                "request_id": request.state.request_id,
+                "trace_id": request.state.trace_id,
+            }
             run_meta = RunMetadata(
                 run_id=run_id,
                 session_id=session_id,
@@ -560,6 +701,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.RUNNING,
                 model=resolved_model,
+                metadata=run_metadata,
             )
             storage.create_run(run_meta)
             tenant_store.record_run(org_id)
@@ -572,6 +714,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 org_id=org_id,
                 status=RunStatus.COMPLETED,
                 model=resolved_model,
+                metadata=run_metadata,
             )
             storage.update_run(run_meta)
             
@@ -1037,6 +1180,140 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         return [asdict(summary) for summary in tenant_store.usage_summary(org_id)]
 
     @app.get(
+        "/admin/users",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def list_users(request: Request, org_id: Optional[str] = None, active_only: bool = False):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.users.list",
+                actor=actor,
+                org_id=audit_org,
+                target_type="user",
+                metadata={"filter_org_id": org_id, "active_only": active_only},
+            )
+        )
+        return [asdict(user) for user in tenant_store.list_users(org_id, active_only=active_only)]
+
+    @app.post(
+        "/admin/users",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_user(req: UserCreateRequest, request: Request):
+        user = tenant_store.create_user(req.org_id, req.name)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.users.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="user",
+                target_id=user.user_id,
+                metadata=asdict(user),
+            )
+        )
+        return asdict(user)
+
+    @app.post(
+        "/admin/service-accounts",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def create_service_account(req: ServiceAccountCreateRequest, request: Request):
+        user = tenant_store.create_user(req.org_id, req.name, is_service_account=True)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.service_accounts.create",
+                actor=actor,
+                org_id=audit_org,
+                target_type="service_account",
+                target_id=user.user_id,
+                metadata=asdict(user),
+            )
+        )
+        return asdict(user)
+
+    @app.delete(
+        "/admin/users/{user_id}",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def deactivate_user(user_id: str, request: Request):
+        removed = tenant_store.deactivate_user(user_id)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.users.deactivate",
+                actor=actor,
+                org_id=audit_org,
+                target_type="user",
+                target_id=user_id,
+                metadata={"deactivated": removed},
+            )
+        )
+        if not removed:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"user_id": user_id, "deactivated": True}
+
+    @app.get("/scim/v2/Users", tags=["SCIM"])
+    async def scim_list_users(request: Request):
+        _verify_scim_token(request)
+        users = tenant_store.list_users()
+        resources = [
+            {
+                "id": user.user_id,
+                "userName": user.name,
+                "active": user.active,
+                "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {
+                    "orgId": user.org_id,
+                    "serviceAccount": user.is_service_account,
+                },
+            }
+            for user in users
+        ]
+        return {
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+            "totalResults": len(resources),
+            "startIndex": 1,
+            "itemsPerPage": len(resources),
+            "Resources": resources,
+        }
+
+    @app.post("/scim/v2/Users", tags=["SCIM"])
+    async def scim_create_user(request: Request):
+        _verify_scim_token(request)
+        payload = await request.json()
+        user_name = payload.get("userName") or payload.get("name", {}).get("formatted", "unknown")
+        org_id = payload.get("urn:ietf:params:scim:schemas:extension:enterprise:2.0:User", {}).get(
+            "orgId", "default"
+        )
+        is_service_account = payload.get(
+            "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User", {}
+        ).get("serviceAccount", False)
+        user = tenant_store.create_user(org_id, user_name, is_service_account=bool(is_service_account))
+        return {
+            "id": user.user_id,
+            "userName": user.name,
+            "active": user.active,
+            "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {
+                "orgId": user.org_id,
+                "serviceAccount": user.is_service_account,
+            },
+        }
+
+    @app.delete("/scim/v2/Users/{user_id}", tags=["SCIM"])
+    async def scim_delete_user(user_id: str, request: Request):
+        _verify_scim_token(request)
+        removed = tenant_store.deactivate_user(user_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"id": user_id, "active": False}
+
+    @app.get(
         "/admin/quotas",
         dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
         tags=["Admin"],
@@ -1105,9 +1382,19 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         )
         if org_id:
             policy = tenant_store.get_retention_policy(org_id)
-            return {"org_id": org_id, "max_events": policy.max_events}
+            return {
+                "org_id": org_id,
+                "max_events": policy.max_events,
+                "max_run_age_days": policy.max_run_age_days,
+                "max_session_age_days": policy.max_session_age_days,
+            }
         return [
-            {"org_id": org.org_id, "max_events": tenant_store.get_retention_policy(org.org_id).max_events}
+            {
+                "org_id": org.org_id,
+                "max_events": tenant_store.get_retention_policy(org.org_id).max_events,
+                "max_run_age_days": tenant_store.get_retention_policy(org.org_id).max_run_age_days,
+                "max_session_age_days": tenant_store.get_retention_policy(org.org_id).max_session_age_days,
+            }
             for org in tenant_store.list_orgs()
         ]
 
@@ -1119,7 +1406,11 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     async def set_retention_policy(req: RetentionPolicyRequest, request: Request):
         tenant_store.set_retention_policy(
             req.org_id,
-            RetentionPolicyConfig(max_events=req.max_events),
+            RetentionPolicyConfig(
+                max_events=req.max_events,
+                max_run_age_days=req.max_run_age_days,
+                max_session_age_days=req.max_session_age_days,
+            ),
         )
         actor, audit_org = _audit_actor(request)
         audit_logger.emit(
@@ -1132,7 +1423,97 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             )
         )
         policy = tenant_store.get_retention_policy(req.org_id)
-        return {"org_id": req.org_id, "max_events": policy.max_events}
+        return {
+            "org_id": req.org_id,
+            "max_events": policy.max_events,
+            "max_run_age_days": policy.max_run_age_days,
+            "max_session_age_days": policy.max_session_age_days,
+        }
+
+    @app.get(
+        "/admin/residency",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_residency(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.residency.get",
+                actor=actor,
+                org_id=audit_org,
+                target_type="residency",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        if org_id:
+            return {"org_id": org_id, "region": tenant_store.get_residency(org_id)}
+        return [
+            {"org_id": org.org_id, "region": tenant_store.get_residency(org.org_id)}
+            for org in tenant_store.list_orgs()
+        ]
+
+    @app.post(
+        "/admin/residency",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_residency(req: ResidencyRequest, request: Request):
+        tenant_store.set_residency(req.org_id, req.region)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.residency.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="residency",
+                metadata=req.model_dump(),
+            )
+        )
+        return {"org_id": req.org_id, "region": tenant_store.get_residency(req.org_id)}
+
+    @app.get(
+        "/admin/encryption-keys",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def get_encryption_key(request: Request, org_id: Optional[str] = None):
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.encryption_keys.get",
+                actor=actor,
+                org_id=audit_org,
+                target_type="encryption_key",
+                metadata={"filter_org_id": org_id} if org_id else {},
+            )
+        )
+        if org_id:
+            return {"org_id": org_id, "key": tenant_store.get_encryption_key(org_id)}
+        return [
+            {"org_id": org.org_id, "key": tenant_store.get_encryption_key(org.org_id)}
+            for org in tenant_store.list_orgs()
+        ]
+
+    @app.post(
+        "/admin/encryption-keys",
+        dependencies=[Depends(verify_api_key), Depends(require_scopes([SCOPE_ADMIN]))],
+        tags=["Admin"],
+    )
+    async def set_encryption_key(req: EncryptionKeyRequest, request: Request):
+        key = req.key or generate_key()
+        tenant_store.set_encryption_key(req.org_id, key)
+        actor, audit_org = _audit_actor(request)
+        audit_logger.emit(
+            AuditLogEntry(
+                action="admin.encryption_keys.set",
+                actor=actor,
+                org_id=audit_org,
+                target_type="encryption_key",
+                metadata={"org_id": req.org_id},
+            )
+        )
+        return {"org_id": req.org_id, "key": key}
 
     @app.get(
         "/admin/schedules",

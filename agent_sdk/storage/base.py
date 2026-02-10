@@ -5,7 +5,7 @@ Storage interfaces for runs, sessions, and streaming events.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 
 from agent_sdk.observability.stream_envelope import RunMetadata, SessionMetadata, StreamEnvelope
 
@@ -76,3 +76,15 @@ class StorageBackend(ABC):
     def delete_session(self, session_id: str) -> int:
         """Delete a session and all of its runs/events."""
         raise NotImplementedError
+
+    def set_encryption_resolver(self, resolver: Optional[Callable[[str], Optional[str]]]) -> None:
+        """Optional hook to supply per-org encryption keys."""
+        return None
+
+    def prune_runs(self, org_id: str, before_timestamp: str) -> int:
+        """Optional retention helper for runs."""
+        return 0
+
+    def prune_sessions(self, org_id: str, before_timestamp: str) -> int:
+        """Optional retention helper for sessions."""
+        return 0

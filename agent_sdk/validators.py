@@ -229,6 +229,8 @@ class RetentionPolicyRequest(BaseModel):
 
     org_id: str = Field(..., min_length=1, max_length=100)
     max_events: Optional[int] = Field(default=None, ge=1)
+    max_run_age_days: Optional[int] = Field(default=None, ge=1)
+    max_session_age_days: Optional[int] = Field(default=None, ge=1)
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -238,6 +240,40 @@ class ScheduleCreateRequest(BaseModel):
     task: str = Field(..., min_length=1, max_length=10000)
     cron: str = Field(..., min_length=1, max_length=100)
     enabled: bool = Field(default=True)
+
+
+class UserCreateRequest(BaseModel):
+    """Request to create a user."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class ServiceAccountCreateRequest(BaseModel):
+    """Request to create a service account."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class AuthValidateRequest(BaseModel):
+    """Request to validate an identity token."""
+
+    token: str = Field(..., min_length=1, max_length=10000)
+
+
+class ResidencyRequest(BaseModel):
+    """Request to update org data residency."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    region: Optional[str] = Field(default=None, max_length=50)
+
+
+class EncryptionKeyRequest(BaseModel):
+    """Request to update org encryption key."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    key: Optional[str] = Field(default=None, max_length=500)
 
 
 class PromptPolicyCreateRequest(BaseModel):

@@ -34,6 +34,8 @@ dependencies = [
     "alembic>=1.13,<2.0",
     "croniter>=1.4,<3.0",
     "redis>=5.0,<6.0",
+    "pyjwt>=2.8,<3.0",
+    "cryptography>=42.0,<45.0",
 ]
 
 [project.optional-dependencies]
@@ -149,6 +151,7 @@ packages = [
     "agent_sdk.execution",
     "agent_sdk.finetuning",
     "agent_sdk.human_in_the_loop",
+    "agent_sdk.identity",
     "agent_sdk.llm",
     "agent_sdk.memory",
     "agent_sdk.observability",

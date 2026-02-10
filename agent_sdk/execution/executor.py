@@ -59,7 +59,13 @@ class ExecutorAgent(Agent):
             if not isinstance(step.inputs, dict):
                 raise ToolError(f"Tool inputs must be a dictionary, got {type(step.inputs)}")
             
-            output = tool(step.inputs)
+            sandbox = None
+            if self.context.config:
+                sandbox = self.context.config.get("tool_sandbox")
+            if sandbox:
+                output = sandbox.run(tool, step.inputs)
+            else:
+                output = tool(step.inputs)
             success = True
             
             if self.context.events:

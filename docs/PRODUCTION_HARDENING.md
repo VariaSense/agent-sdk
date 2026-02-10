@@ -10,6 +10,8 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Per-key rate limit and IP allowlist via admin API key creation.
 - Tool allowlists: `AGENT_SDK_FS_ALLOWLIST`, `AGENT_SDK_HTTP_ALLOWLIST`.
 - Secrets providers: env/file + Vault + AWS/GCP/Azure secret managers (see `agent_sdk/secrets.py`).
+- Identity providers: `AGENT_SDK_IDP_PROVIDER=mock|oidc|saml` with `/auth/validate`.
+- SCIM provisioning: set `AGENT_SDK_SCIM_TOKEN` and use `/scim/v2/Users`.
 
 ## Durability and Replay
 - Postgres storage for runs/sessions/events (`AGENT_SDK_STORAGE_BACKEND=postgres`).
@@ -22,6 +24,8 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Audit logging: `AGENT_SDK_AUDIT_LOG_PATH`, `AGENT_SDK_AUDIT_LOG_STDOUT`.
 - Data deletion endpoints: `/admin/runs/{id}`, `/admin/sessions/{id}`.
 - PII redaction: `AGENT_SDK_PII_REDACTION_ENABLED=true`.
+- Data residency: set org residency via `/admin/residency` and enforce with `AGENT_SDK_DATA_REGION`.
+- Encryption at rest: enable with `AGENT_SDK_ENCRYPTION_ENABLED=true` and set per-tenant keys via `/admin/encryption-keys`.
 
 ## Model Management and Quotas
 - Per-tenant model policies via `/admin/model-policies`.
@@ -31,10 +35,17 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
 - Durable queue backend: `AGENT_SDK_QUEUE_BACKEND=sqlite`, `AGENT_SDK_QUEUE_DB_PATH=queue.db`.
 - Redis queue backend: `AGENT_SDK_QUEUE_BACKEND=redis`, `AGENT_SDK_REDIS_URL=redis://host:6379/0`.
+- SQS queue backend: `AGENT_SDK_QUEUE_BACKEND=sqs`, `AGENT_SDK_SQS_QUEUE_URL=...`.
+- Kafka queue backend: `AGENT_SDK_QUEUE_BACKEND=kafka`, `AGENT_SDK_KAFKA_TOPIC=agent-sdk-jobs`.
 - Retry policy: `AGENT_SDK_RETRY_MAX`, `AGENT_SDK_RETRY_BASE_DELAY`, `AGENT_SDK_RETRY_MAX_DELAY`.
 - Backpressure: `AGENT_SDK_STREAM_QUEUE_SIZE`, `AGENT_SDK_STREAM_MAX_EVENTS`.
 - Idempotency for run creation: `Idempotency-Key` header.
 - Scheduled runs via `/admin/schedules` with cron expressions.
+- Durable scheduler: set `AGENT_SDK_SCHEDULER_DB_PATH` to persist schedules.
+
+## Tool Sandboxing
+- Enable local sandbox: `AGENT_SDK_TOOL_SANDBOX=local`, `AGENT_SDK_TOOL_SANDBOX_TIMEOUT=10`.
+- Docker sandbox is a stub (`AGENT_SDK_TOOL_SANDBOX=docker` requires external integration).
 
 ## Metrics and Monitoring
 - Prometheus endpoint: set `AGENT_SDK_PROMETHEUS_ENABLED=true`, scrape `/metrics`.
@@ -56,6 +67,10 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Manifests live in `deploy/k8s/` (Deployment, Service, HPA).
 - Probes: `/health` for liveness and `/ready` for readiness.
 - HPA uses CPU utilization (requires metrics-server).
+- Helm chart: `deploy/helm/agent-sdk`.
+
+## Release Hardening
+- SBOM + vulnerability scanning guidance in `docs/RELEASE_HARDENING.md`.
 
 ## API Versioning
 - Prefer versioned paths: `/v1/...`.

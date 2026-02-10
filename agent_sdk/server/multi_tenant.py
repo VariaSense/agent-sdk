@@ -31,6 +31,8 @@ class User:
     org_id: str
     name: str
     created_at: str = field(default_factory=_now_iso)
+    active: bool = True
+    is_service_account: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,8 @@ class QuotaLimits:
 @dataclass(frozen=True)
 class RetentionPolicyConfig:
     max_events: Optional[int] = None
+    max_run_age_days: Optional[int] = None
+    max_session_age_days: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,8 @@ class MultiTenantStore:
         self._usage: Dict[str, UsageSummary] = {}
         self._quotas: Dict[str, QuotaLimits] = {}
         self._retention: Dict[str, RetentionPolicyConfig] = {}
+        self._residency: Dict[str, Optional[str]] = {}
+        self._encryption_keys: Dict[str, Optional[str]] = {}
         self._model_policies: Dict[str, ModelPolicy] = {}
         self._model_catalog: List[str] = []
         self.ensure_org("default", "Default Org")
@@ -104,6 +110,10 @@ class MultiTenantStore:
             self._quotas[org_id] = QuotaLimits()
         if org_id not in self._retention:
             self._retention[org_id] = RetentionPolicyConfig()
+        if org_id not in self._residency:
+            self._residency[org_id] = None
+        if org_id not in self._encryption_keys:
+            self._encryption_keys[org_id] = None
         return org
 
     def list_orgs(self) -> List[Organization]:
@@ -111,21 +121,41 @@ class MultiTenantStore:
             return self._backend.list_orgs()
         return list(self._orgs.values())
 
-    def create_user(self, org_id: str, name: str) -> User:
+    def create_user(self, org_id: str, name: str, is_service_account: bool = False) -> User:
         self.ensure_org(org_id)
         user_id = f"user_{secrets.token_hex(8)}"
-        user = User(user_id=user_id, org_id=org_id, name=name)
+        user = User(user_id=user_id, org_id=org_id, name=name, is_service_account=is_service_account)
         if self._backend is not None:
             return self._backend.create_user(org_id, user)
         self._users[user_id] = user
         return user
 
-    def list_users(self, org_id: Optional[str] = None) -> List[User]:
+    def list_users(self, org_id: Optional[str] = None, active_only: bool = False) -> List[User]:
         if self._backend is not None:
-            return self._backend.list_users(org_id)
+            return self._backend.list_users(org_id, active_only=active_only)
         if org_id is None:
-            return list(self._users.values())
-        return [user for user in self._users.values() if user.org_id == org_id]
+            users = list(self._users.values())
+        else:
+            users = [user for user in self._users.values() if user.org_id == org_id]
+        if active_only:
+            users = [user for user in users if user.active]
+        return users
+
+    def deactivate_user(self, user_id: str) -> bool:
+        if self._backend is not None:
+            return self._backend.deactivate_user(user_id)
+        user = self._users.get(user_id)
+        if not user:
+            return False
+        self._users[user_id] = User(
+            user_id=user.user_id,
+            org_id=user.org_id,
+            name=user.name,
+            created_at=user.created_at,
+            active=False,
+            is_service_account=user.is_service_account,
+        )
+        return True
 
     def create_api_key(
         self,
@@ -267,6 +297,32 @@ class MultiTenantStore:
             if policy is not None:
                 return policy
         return self._retention.get(org_id, RetentionPolicyConfig())
+
+    def set_residency(self, org_id: str, region: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            self._backend.set_residency(org_id, region)
+            return
+        self._residency[org_id] = region
+
+    def get_residency(self, org_id: str) -> Optional[str]:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            return self._backend.get_residency(org_id)
+        return self._residency.get(org_id)
+
+    def set_encryption_key(self, org_id: str, key: Optional[str]) -> None:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            self._backend.set_encryption_key(org_id, key)
+            return
+        self._encryption_keys[org_id] = key
+
+    def get_encryption_key(self, org_id: str) -> Optional[str]:
+        self.ensure_org(org_id)
+        if self._backend is not None:
+            return self._backend.get_encryption_key(org_id)
+        return self._encryption_keys.get(org_id)
 
     def check_quota(self, org_id: str, new_run: bool = False, new_session: bool = False, tokens: int = 0) -> Tuple[bool, Optional[str]]:
         summary = self._usage.get(org_id, UsageSummary(org_id=org_id))
