@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_fixture",
+  "org_id": "default",
+  "user_id": "user_fixture",
+  "created_at": "2025-01-01T00:00:00+00:00",
+  "updated_at": "2025-01-01T00:00:00+00:00",
+  "tags": {"tier": "standard"},
+  "metadata": {"source": "fixture"}
+}

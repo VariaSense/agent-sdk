@@ -68,6 +68,20 @@ def test_policy_bundle_create_and_assign(client):
     assert len(versions) == 1
     assert versions[0]["version"] == 1
 
+    submit = client.post(
+        "/admin/policy-approvals",
+        headers={"X-API-Key": "test-key"},
+        json={"bundle_id": "default-policy", "version": 1, "submitted_by": "admin"},
+    )
+    assert submit.status_code == 200
+
+    review = client.post(
+        "/admin/policy-approvals/review",
+        headers={"X-API-Key": "test-key"},
+        json={"bundle_id": "default-policy", "version": 1, "status": "approved", "reviewed_by": "admin"},
+    )
+    assert review.status_code == 200
+
     assign_resp = client.post(
         "/admin/policy-assignments",
         headers={"X-API-Key": "test-key"},

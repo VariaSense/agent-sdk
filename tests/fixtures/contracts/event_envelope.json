@@ -1,0 +1,11 @@
+{
+  "run_id": "run_fixture",
+  "session_id": "sess_fixture",
+  "stream": "assistant",
+  "event": "assistant.message",
+  "payload": {"text": "hello"},
+  "timestamp": "2025-01-01T00:00:02+00:00",
+  "seq": 1,
+  "status": "running",
+  "metadata": {"request_id": "req_fixture"}
+}

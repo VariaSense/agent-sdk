@@ -29,6 +29,7 @@ doctor_cmd = typer.Typer(help="Diagnostics and health checks")
 backup_cmd = typer.Typer(help="Backup and restore storage/control plane data")
 registry_cmd = typer.Typer(help="Tool pack registry operations")
 compliance_cmd = typer.Typer(help="Compliance reporting")
+compat_cmd = typer.Typer(help="Versioning and compatibility")
 
 
 def collect_doctor_checks(config: str) -> list[dict]:
@@ -104,6 +105,37 @@ def _require_pg_command(name: str) -> str:
         raise typer.BadParameter(f"{name} is required on PATH for Postgres backups")
     return path
 
+
+@doctor_cmd.command("env-parity")
+def env_parity(env_dir: str = "deploy/env") -> None:
+    """Check parity of environment example files."""
+    from agent_sdk.config.parity import check_env_parity
+
+    missing = check_env_parity(env_dir)
+    if not missing:
+        typer.echo("env parity: ok")
+        return
+    typer.echo("env parity: mismatched keys detected")
+    for name, keys in missing.items():
+        typer.echo(f"{name}: missing {', '.join(keys)}")
+    raise typer.Exit(code=1)
+
+
+@compat_cmd.command("upgrade-check")
+def upgrade_check(
+    target: str = typer.Argument(..., help="Target SDK version to compare against"),
+    current: str = typer.Option(None, "--current", help="Current SDK version (defaults to installed)"),
+):
+    """Check compatibility between current and target SDK versions."""
+    from agent_sdk.versioning import check_compatibility
+    from agent_sdk import __version__
+
+    current_version = current or __version__
+    result = check_compatibility(current_version, target)
+    status = "compatible" if result.compatible else "incompatible"
+    typer.echo(
+        f"{status}: {result.reason} (current={result.current}, target={result.target})"
+    )
 
 @backup_cmd.command("list")
 def list_backups():

@@ -106,3 +106,33 @@ def test_delete_run_and_session(client):
     )
     assert delete_session.status_code == 200
     assert storage.get_session("sess_delete2") is None
+
+
+def test_delete_project_and_api_key(client):
+    project = client.post(
+        "/admin/projects",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "name": "Delete Project"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["project_id"]
+    delete_project = client.delete(
+        f"/admin/projects/{project_id}",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert delete_project.status_code == 200
+    assert delete_project.json()["deleted"] is True
+
+    key_resp = client.post(
+        "/admin/api-keys",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "label": "delete-key"},
+    )
+    assert key_resp.status_code == 200
+    key_id = key_resp.json()["key_id"]
+    delete_key = client.delete(
+        f"/admin/api-keys/{key_id}",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert delete_key.status_code == 200
+    assert delete_key.json()["deleted"] is True

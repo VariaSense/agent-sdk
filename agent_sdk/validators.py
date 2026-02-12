@@ -290,10 +290,57 @@ class PolicyBundleAssignRequest(BaseModel):
     )
 
 
+class PolicyApprovalSubmitRequest(BaseModel):
+    """Request to submit a policy bundle for approval."""
+
+    bundle_id: str = Field(..., min_length=1, max_length=100)
+    version: int = Field(..., ge=1)
+    submitted_by: Optional[str] = Field(default=None, max_length=200)
+    notes: Optional[str] = Field(default=None, max_length=500)
+    org_id: Optional[str] = Field(default=None, max_length=100)
+
+
+class PolicyApprovalReviewRequest(BaseModel):
+    """Request to approve or reject a policy bundle."""
+
+    bundle_id: str = Field(..., min_length=1, max_length=100)
+    version: int = Field(..., ge=1)
+    status: str = Field(..., min_length=3, max_length=20)
+    reviewed_by: Optional[str] = Field(default=None, max_length=200)
+    notes: Optional[str] = Field(default=None, max_length=500)
+    org_id: Optional[str] = Field(default=None, max_length=100)
+
+
+class PolicyPresetRequest(BaseModel):
+    """Request to create a safety policy preset bundle."""
+
+    bundle_id: str = Field(..., min_length=1, max_length=100)
+    preset: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field(default=None, max_length=200)
+
+
 class QuotaUpdateRequest(BaseModel):
     """Request to update quota limits."""
 
     org_id: str = Field(..., min_length=1, max_length=100)
+    max_runs: Optional[int] = Field(default=None, ge=0)
+    max_sessions: Optional[int] = Field(default=None, ge=0)
+    max_tokens: Optional[int] = Field(default=None, ge=0)
+
+
+class ProjectQuotaUpdateRequest(BaseModel):
+    """Request to update project quota limits."""
+
+    project_id: str = Field(..., min_length=1, max_length=100)
+    max_runs: Optional[int] = Field(default=None, ge=0)
+    max_sessions: Optional[int] = Field(default=None, ge=0)
+    max_tokens: Optional[int] = Field(default=None, ge=0)
+
+
+class APIKeyQuotaUpdateRequest(BaseModel):
+    """Request to update API key quota limits."""
+
+    key: str = Field(..., min_length=1, max_length=200)
     max_runs: Optional[int] = Field(default=None, ge=0)
     max_sessions: Optional[int] = Field(default=None, ge=0)
     max_tokens: Optional[int] = Field(default=None, ge=0)
@@ -306,6 +353,14 @@ class RetentionPolicyRequest(BaseModel):
     max_events: Optional[int] = Field(default=None, ge=1)
     max_run_age_days: Optional[int] = Field(default=None, ge=1)
     max_session_age_days: Optional[int] = Field(default=None, ge=1)
+
+
+class PrivacyExportRequest(BaseModel):
+    """Request to export privacy data bundle."""
+
+    org_id: str = Field(..., min_length=1, max_length=100)
+    user_id: Optional[str] = Field(default=None, max_length=100)
+    include_audit_logs: bool = Field(default=False)
 
 
 class ScheduleCreateRequest(BaseModel):

@@ -75,6 +75,28 @@ class UsageSummary:
     last_session_at: Optional[str] = None
 
 
+@dataclass
+class ProjectUsageSummary:
+    project_id: str
+    org_id: str
+    run_count: int = 0
+    session_count: int = 0
+    token_count: int = 0
+    last_run_at: Optional[str] = None
+    last_session_at: Optional[str] = None
+
+
+@dataclass
+class KeyUsageSummary:
+    key: str
+    org_id: str
+    run_count: int = 0
+    session_count: int = 0
+    token_count: int = 0
+    last_run_at: Optional[str] = None
+    last_session_at: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class BackupRecord:
     backup_id: str
@@ -126,13 +148,18 @@ class MultiTenantStore:
         self._users: Dict[str, User] = {}
         self._keys: Dict[str, APIKeyRecord] = {}
         self._usage: Dict[str, UsageSummary] = {}
+        self._project_usage: Dict[str, ProjectUsageSummary] = {}
+        self._key_usage: Dict[str, KeyUsageSummary] = {}
         self._quotas: Dict[str, QuotaLimits] = {}
+        self._project_quotas: Dict[str, QuotaLimits] = {}
+        self._key_quotas: Dict[str, QuotaLimits] = {}
         self._retention: Dict[str, RetentionPolicyConfig] = {}
         self._residency: Dict[str, Optional[str]] = {}
         self._encryption_keys: Dict[str, Optional[str]] = {}
         self._model_policies: Dict[str, ModelPolicy] = {}
         self._policy_bundles: Dict[str, List["PolicyBundle"]] = {}
         self._policy_assignments: Dict[str, "PolicyAssignment"] = {}
+        self._policy_approvals: Dict[tuple, "PolicyApproval"] = {}
         self._webhook_subscriptions: Dict[str, "WebhookSubscription"] = {}
         self._secret_rotation: Dict[str, SecretRotationPolicy] = {}
         self._model_catalog: List[str] = []
@@ -181,6 +208,15 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.get_project(project_id)
         return self._projects.get(project_id)
+
+    def delete_project(self, project_id: str) -> bool:
+        if self._backend is not None:
+            return self._backend.delete_project(project_id)
+        removed = project_id in self._projects
+        self._projects.pop(project_id, None)
+        self._project_quotas.pop(project_id, None)
+        self._project_usage.pop(project_id, None)
+        return removed
 
     def create_user(self, org_id: str, name: str, is_service_account: bool = False) -> User:
         self.ensure_org(org_id)
@@ -319,24 +355,68 @@ class MultiTenantStore:
         )
         return new_record, current
 
-    def record_run(self, org_id: str) -> None:
+    def delete_api_key(self, key_id: str) -> bool:
+        if self._backend is not None:
+            return self._backend.delete_api_key(key_id)
+        record = self._keys.pop(key_id, None)
+        if record:
+            self._key_quotas.pop(record.key, None)
+            self._key_usage.pop(record.key, None)
+            return True
+        return False
+
+    def record_run(self, org_id: str, project_id: Optional[str] = None, key: Optional[str] = None) -> None:
         self.ensure_org(org_id)
         summary = self._usage.setdefault(org_id, UsageSummary(org_id=org_id))
         summary.run_count += 1
         summary.last_run_at = _now_iso()
+        if project_id:
+            project = self._project_usage.setdefault(
+                project_id, ProjectUsageSummary(project_id=project_id, org_id=org_id)
+            )
+            project.run_count += 1
+            project.last_run_at = summary.last_run_at
+        if key:
+            key_summary = self._key_usage.setdefault(key, KeyUsageSummary(key=key, org_id=org_id))
+            key_summary.run_count += 1
+            key_summary.last_run_at = summary.last_run_at
 
-    def record_session(self, org_id: str) -> None:
+    def record_session(self, org_id: str, project_id: Optional[str] = None, key: Optional[str] = None) -> None:
         self.ensure_org(org_id)
         summary = self._usage.setdefault(org_id, UsageSummary(org_id=org_id))
         summary.session_count += 1
         summary.last_session_at = _now_iso()
+        if project_id:
+            project = self._project_usage.setdefault(
+                project_id, ProjectUsageSummary(project_id=project_id, org_id=org_id)
+            )
+            project.session_count += 1
+            project.last_session_at = summary.last_session_at
+        if key:
+            key_summary = self._key_usage.setdefault(key, KeyUsageSummary(key=key, org_id=org_id))
+            key_summary.session_count += 1
+            key_summary.last_session_at = summary.last_session_at
 
-    def record_tokens(self, org_id: str, tokens: int) -> None:
+    def record_tokens(
+        self,
+        org_id: str,
+        tokens: int,
+        project_id: Optional[str] = None,
+        key: Optional[str] = None,
+    ) -> None:
         if tokens <= 0:
             return
         self.ensure_org(org_id)
         summary = self._usage.setdefault(org_id, UsageSummary(org_id=org_id))
         summary.token_count += tokens
+        if project_id:
+            project = self._project_usage.setdefault(
+                project_id, ProjectUsageSummary(project_id=project_id, org_id=org_id)
+            )
+            project.token_count += tokens
+        if key:
+            key_summary = self._key_usage.setdefault(key, KeyUsageSummary(key=key, org_id=org_id))
+            key_summary.token_count += tokens
 
     def set_quota(self, org_id: str, limits: QuotaLimits) -> None:
         self.ensure_org(org_id)
@@ -349,6 +429,26 @@ class MultiTenantStore:
         if self._backend is not None:
             return self._backend.get_quota(org_id)
         return self._quotas.get(org_id, QuotaLimits())
+
+    def set_project_quota(self, project_id: str, limits: QuotaLimits) -> None:
+        if self._backend is not None:
+            return self._backend.set_project_quota(project_id, limits)
+        self._project_quotas[project_id] = limits
+
+    def get_project_quota(self, project_id: str) -> QuotaLimits:
+        if self._backend is not None:
+            return self._backend.get_project_quota(project_id)
+        return self._project_quotas.get(project_id, QuotaLimits())
+
+    def set_api_key_quota(self, key: str, limits: QuotaLimits) -> None:
+        if self._backend is not None:
+            return self._backend.set_api_key_quota(key, limits)
+        self._key_quotas[key] = limits
+
+    def get_api_key_quota(self, key: str) -> QuotaLimits:
+        if self._backend is not None:
+            return self._backend.get_api_key_quota(key)
+        return self._key_quotas.get(key, QuotaLimits())
 
     def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
         self.ensure_org(org_id)
@@ -391,15 +491,59 @@ class MultiTenantStore:
             return self._backend.get_encryption_key(org_id)
         return self._encryption_keys.get(org_id)
 
-    def check_quota(self, org_id: str, new_run: bool = False, new_session: bool = False, tokens: int = 0) -> Tuple[bool, Optional[str]]:
+    def check_quota(
+        self,
+        org_id: str,
+        new_run: bool = False,
+        new_session: bool = False,
+        tokens: int = 0,
+        project_id: Optional[str] = None,
+        key: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
         summary = self._usage.get(org_id, UsageSummary(org_id=org_id))
         limits = self.get_quota(org_id)
         if new_run and limits.max_runs is not None and summary.run_count >= limits.max_runs:
-            return False, "run_quota_exceeded"
+            return False, "org_run_quota_exceeded"
         if new_session and limits.max_sessions is not None and summary.session_count >= limits.max_sessions:
-            return False, "session_quota_exceeded"
+            return False, "org_session_quota_exceeded"
         if tokens > 0 and limits.max_tokens is not None and summary.token_count + tokens > limits.max_tokens:
-            return False, "token_quota_exceeded"
+            return False, "org_token_quota_exceeded"
+        if project_id:
+            project_summary = self._project_usage.get(
+                project_id, ProjectUsageSummary(project_id=project_id, org_id=org_id)
+            )
+            project_limits = self.get_project_quota(project_id)
+            if new_run and project_limits.max_runs is not None and project_summary.run_count >= project_limits.max_runs:
+                return False, "project_run_quota_exceeded"
+            if (
+                new_session
+                and project_limits.max_sessions is not None
+                and project_summary.session_count >= project_limits.max_sessions
+            ):
+                return False, "project_session_quota_exceeded"
+            if (
+                tokens > 0
+                and project_limits.max_tokens is not None
+                and project_summary.token_count + tokens > project_limits.max_tokens
+            ):
+                return False, "project_token_quota_exceeded"
+        if key:
+            key_summary = self._key_usage.get(key, KeyUsageSummary(key=key, org_id=org_id))
+            key_limits = self.get_api_key_quota(key)
+            if new_run and key_limits.max_runs is not None and key_summary.run_count >= key_limits.max_runs:
+                return False, "key_run_quota_exceeded"
+            if (
+                new_session
+                and key_limits.max_sessions is not None
+                and key_summary.session_count >= key_limits.max_sessions
+            ):
+                return False, "key_session_quota_exceeded"
+            if (
+                tokens > 0
+                and key_limits.max_tokens is not None
+                and key_summary.token_count + tokens > key_limits.max_tokens
+            ):
+                return False, "key_token_quota_exceeded"
         return True, None
 
     def set_model_catalog(self, models: List[str]) -> None:
@@ -506,6 +650,86 @@ class MultiTenantStore:
             return self._backend.get_policy_assignment(org_id)
         return self._policy_assignments.get(org_id)
 
+    def submit_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        submitted_by: Optional[str] = None,
+        notes: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> "PolicyApproval":
+        from agent_sdk.policy.types import PolicyApproval, PolicyApprovalStatus
+
+        approval = PolicyApproval(
+            bundle_id=bundle_id,
+            version=version,
+            status=PolicyApprovalStatus.PENDING,
+            submitted_by=submitted_by,
+            notes=notes,
+            org_id=org_id,
+        )
+        if self._backend is not None:
+            return self._backend.create_policy_approval(approval)
+        self._policy_approvals[(bundle_id, version, org_id)] = approval
+        return approval
+
+    def review_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        status: str,
+        reviewed_by: Optional[str] = None,
+        notes: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> "PolicyApproval":
+        from agent_sdk.policy.types import PolicyApproval, PolicyApprovalStatus, _now_iso
+
+        if status not in {PolicyApprovalStatus.APPROVED, PolicyApprovalStatus.REJECTED}:
+            raise ValueError("Invalid approval status")
+        existing = self.get_policy_approval(bundle_id, version, org_id)
+        approval = PolicyApproval(
+            bundle_id=bundle_id,
+            version=version,
+            status=status,
+            submitted_by=existing.submitted_by if existing else None,
+            reviewed_by=reviewed_by,
+            submitted_at=existing.submitted_at if existing else _now_iso(),
+            reviewed_at=_now_iso(),
+            notes=notes or (existing.notes if existing else None),
+            org_id=org_id,
+        )
+        if self._backend is not None:
+            return self._backend.create_policy_approval(approval)
+        self._policy_approvals[(bundle_id, version, org_id)] = approval
+        return approval
+
+    def get_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        org_id: Optional[str] = None,
+    ) -> Optional["PolicyApproval"]:
+        if self._backend is not None:
+            return self._backend.get_policy_approval(bundle_id, version, org_id)
+        return self._policy_approvals.get((bundle_id, version, org_id))
+
+    def list_policy_approvals(
+        self,
+        bundle_id: Optional[str] = None,
+        status: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> List["PolicyApproval"]:
+        if self._backend is not None:
+            return self._backend.list_policy_approvals(bundle_id, status, org_id)
+        approvals = list(self._policy_approvals.values())
+        if bundle_id:
+            approvals = [approval for approval in approvals if approval.bundle_id == bundle_id]
+        if status:
+            approvals = [approval for approval in approvals if approval.status == status]
+        if org_id is not None:
+            approvals = [approval for approval in approvals if approval.org_id == org_id]
+        return approvals
+
     def create_webhook_subscription(self, subscription: "WebhookSubscription") -> "WebhookSubscription":
         if self._backend is not None:
             return self._backend.create_webhook_subscription(subscription)
@@ -565,4 +789,16 @@ class MultiTenantStore:
         if org_id is None:
             return list(self._usage.values())
         summary = self._usage.get(org_id)
+        return [summary] if summary else []
+
+    def project_usage_summary(self, project_id: Optional[str] = None) -> List[ProjectUsageSummary]:
+        if project_id is None:
+            return list(self._project_usage.values())
+        summary = self._project_usage.get(project_id)
+        return [summary] if summary else []
+
+    def api_key_usage_summary(self, key: Optional[str] = None) -> List[KeyUsageSummary]:
+        if key is None:
+            return list(self._key_usage.values())
+        summary = self._key_usage.get(key)
         return [summary] if summary else []

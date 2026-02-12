@@ -26,7 +26,12 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Audit hash chaining: `AGENT_SDK_AUDIT_HASH_CHAIN=true` (tamper-evident logs).
 - Audit export: `/admin/audit-logs/export?format=jsonl|csv`.
 - Webhook subscriptions: `/admin/webhooks` (delivery with retries + DLQ at `/admin/webhooks/dlq`).
+- Policy bundles require approvals before assignment (configurable via `AGENT_SDK_POLICY_APPROVAL_REQUIRED`).
+- Policy approvals: `/admin/policy-approvals` and `/admin/policy-approvals/review`.
+- Safety policy presets: `/admin/policy-presets`.
 - Data deletion endpoints: `/admin/runs/{id}`, `/admin/sessions/{id}`.
+- Project deletion: `/admin/projects/{id}`. API key deletion: `/admin/api-keys/{id}`.
+- Privacy export bundles: `/admin/privacy/export`.
 - PII redaction: `AGENT_SDK_PII_REDACTION_ENABLED=true`.
 - Data residency: set org residency via `/admin/residency` and enforce with `AGENT_SDK_DATA_REGION`.
 - Encryption at rest: enable with `AGENT_SDK_ENCRYPTION_ENABLED=true` and set per-tenant keys via `/admin/encryption-keys`.
@@ -34,7 +39,9 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Model Management and Quotas
 - Per-tenant model policies via `/admin/model-policies`.
 - Quotas via `/admin/quotas` (runs/sessions/tokens).
+- Project quotas: `/admin/quotas/projects`. API key quotas: `/admin/quotas/api-keys`.
 - Usage export: `/admin/usage/export?group_by=org_id,project` (CSV/JSON).
+- Usage summaries: `/admin/usage/projects`, `/admin/usage/api-keys`.
 - Provider health: `/admin/providers/health`.
 
 ## Reliability
@@ -57,6 +64,8 @@ This guide documents the production-grade features added in Phase 4 and how to e
 
 ## Metrics and Monitoring
 - Prometheus endpoint: set `AGENT_SDK_PROMETHEUS_ENABLED=true`, scrape `/metrics`.
+- Alert rules reference: `deploy/alerts/prometheus_rules.yaml`.
+- Runbooks: `docs/runbooks/`.
 
 ## Tracing Export (OpenTelemetry)
 - Enable exporter preset: `AGENT_SDK_OTEL_EXPORTER=otlp` or `AGENT_SDK_OTEL_EXPORTER=stdout`.
@@ -69,6 +78,14 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Archival
 - Local archive export/restore: `/admin/archives/export` and `/admin/archives/restore`.
 - Archive path: `AGENT_SDK_ARCHIVE_PATH=archives`.
+
+## Privacy and Compliance
+- GDPR/CCPA export bundles via `/admin/privacy/export`.
+- Environment parity check: `agent-sdk doctor env-parity`.
+
+## Versioning
+- Compatibility check: `agent-sdk compat upgrade-check <version>`.
+- Deprecation policy: `docs/DEPRECATION_POLICY.md`.
 
 ## Secrets Rotation
 - Rotation policies: `/admin/secrets/rotation`.

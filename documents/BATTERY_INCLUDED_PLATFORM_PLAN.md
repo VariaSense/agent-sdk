@@ -3,7 +3,7 @@
 ## Purpose
 Deliver a "battery-included" experience on top of agent-sdk while keeping the SDK as the stable agent runtime. This plan defines what to build, in what order, and the concrete deliverables to track implementation.
 
-## Current Status (as of 2026-02-10)
+## Current Status (as of 2026-02-11)
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
@@ -13,6 +13,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 7: Enterprise IAM, compliance, and ecosystem complete.
 - Phase 8: Governance, DR, and ecosystem maturity complete.
 - Phase 9: Operational excellence & enterprise governance complete.
+- Phase 10: Comprehensive production readiness complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -977,3 +978,113 @@ Estimate: 1-2 weeks.
 
 6. Compliance report CLI + evidence bundle export. **(Completed)**  
 Estimate: 1-2 weeks.
+
+---
+
+## Phase 10: Comprehensive Production Readiness (final, 16-24 weeks)
+
+### Objective
+Close the remaining gaps for a production-grade AI agent SDK so teams can ship regulated, scalable, and maintainable platforms without custom scaffolding.
+
+### 10.1 Interface-First Contracts + Mockability
+- Formalize interfaces for external dependencies and ensure test doubles can cover all integrations.
+- Provide stable contract tests and fixtures to avoid live external services in CI.
+
+Deliverables:
+- `agent_sdk/interfaces` contracts for LLM, tools, storage, identity, secrets, and webhooks.
+- Mock implementations + contract test suites.
+- Golden fixtures for API and event contracts.
+
+### 10.2 Policy, Compliance, and Safety Guardrails
+- Central policy registry with versioning and change approval.
+- Safety checks for model/tool allowlists and data access restrictions.
+
+Deliverables:
+- Policy change review workflow + audit trail.
+- Safety policy presets with validation.
+- Compliance checklist mapping to platform features.
+
+### 10.3 Tenant Isolation and Resource Quotas at Scale
+- Stronger isolation guardrails for multi-tenant usage.
+- Quota enforcement across compute, storage, and tokens.
+
+Deliverables:
+- Hierarchical quotas (org, project, key).
+- Rate limit tiers and burst controls.
+- Isolation tests for org/project boundaries.
+
+### 10.4 Operational Reliability and SLOs
+- Production-ready SLOs, alerting, and incident response scaffolding.
+- Runtime safeguards for overload and degraded dependencies.
+
+Deliverables:
+- SLO definitions + Prometheus alert rules.
+- Graceful degradation toggles and feature flags.
+- Runbook templates for incidents.
+
+### 10.5 Data Lifecycle and Privacy
+- Full data retention, deletion, and export coverage for all objects.
+- Privacy controls for PII and sensitive data flows.
+
+Deliverables:
+- End-to-end data deletion coverage for all stored objects.
+- Privacy inventory and redaction validation.
+- GDPR/CCPA export bundles.
+
+### 10.6 SDK Packaging, Versioning, and Compatibility
+- Clear semantic versioning and compatibility guarantees.
+- Upgrade tooling and deprecation guides.
+
+Deliverables:
+- Compatibility matrix and deprecation policy.
+- Upgrade checklist + changelog automation.
+- Stable public API surface documentation.
+
+### 10.7 Deployment and Environment Parity
+- Reference deployments for local, staging, and production.
+- Infrastructure-as-code templates.
+
+Deliverables:
+- Docker, Helm, and Terraform references.
+- Environment parity checks.
+- Minimal production checklist.
+
+### Exit Criteria
+- All external dependencies are interface-driven and fully mockable in tests.
+- Policy and safety guardrails are versioned, auditable, and enforceable.
+- Tenant isolation and quotas validated under load.
+- Operational SLOs, alerts, and runbooks are provided.
+- Data lifecycle and privacy compliance verified.
+- SDK packaging and compatibility guarantees documented.
+- Production deployment references validated.
+
+---
+
+## Phase 10 Backlog (Prioritized, Rough Estimates)
+
+1. Define interface contracts for external dependencies + mock suite for CI. **(Completed)**  
+Estimate: 3-4 weeks.
+
+2. Contract tests and golden fixtures for API and event schemas. **(Completed)**  
+Estimate: 2-3 weeks.
+
+3. Policy registry versioning + approval workflow + audit trail. **(Completed)**  
+Estimate: 2-3 weeks.
+
+4. Safety guardrails: allowlists, data access restrictions, and validation presets. **(Completed)**  
+Estimate: 2-3 weeks.
+
+5. Hierarchical quotas and isolation tests across org/project/key. **(Completed)**  
+Estimate: 2-3 weeks.
+
+6. SLOs, alert rules, and incident runbook templates. **(Completed)**  
+Estimate: 2-3 weeks.
+
+7. Data lifecycle expansion: deletion coverage + GDPR/CCPA export bundles. **(Completed)**  
+Estimate: 2-3 weeks.
+
+8. SDK versioning policy + compatibility matrix + upgrade tooling. **(Completed)**  
+Estimate: 2-3 weeks.
+
+9. Deployment references: Docker/Helm/Terraform + parity checks. **(Completed)**  
+Estimate: 3-4 weeks.

@@ -89,6 +89,28 @@ class PolicyEngine:
             return PolicyDecision(False, f"tokens {tokens} exceeds max {max_tokens}")
         return PolicyDecision(True, "")
 
+    def evaluate_data_access(
+        self,
+        org_id: str,
+        classification: str,
+        action: str,
+    ) -> PolicyDecision:
+        policy = self.get_effective_policy(org_id)
+        data_access = policy.get("data_access", {})
+        deny_classes = set(data_access.get("deny_classifications", []) or [])
+        allow_classes = set(data_access.get("allow_classifications", []) or [])
+        deny_actions = set(data_access.get("deny_actions", []) or [])
+        allow_actions = set(data_access.get("allow_actions", []) or [])
+        if classification in deny_classes:
+            return PolicyDecision(False, f"classification '{classification}' denied by policy")
+        if allow_classes and classification not in allow_classes:
+            return PolicyDecision(False, f"classification '{classification}' not in allowlist")
+        if action in deny_actions:
+            return PolicyDecision(False, f"action '{action}' denied by policy")
+        if allow_actions and action not in allow_actions:
+            return PolicyDecision(False, f"action '{action}' not in allowlist")
+        return PolicyDecision(True, "")
+
     @staticmethod
     def _matches_domains(host: str, domains: list[str]) -> bool:
         if not host:
@@ -99,3 +121,46 @@ class PolicyEngine:
             if host.endswith("." + domain):
                 return True
         return False
+
+
+def safety_preset(name: str) -> Dict[str, Any]:
+    presets = {
+        "strict": {
+            "tools": {"deny": ["filesystem.write", "shell.exec"]},
+            "egress": {"allow_domains": []},
+            "models": {"allow": []},
+            "data_access": {"allow_classifications": ["public"], "allow_actions": ["read"]},
+        },
+        "balanced": {
+            "tools": {"deny": ["filesystem.write"]},
+            "egress": {"allow_domains": ["api.openai.com"]},
+            "models": {"allow": []},
+            "data_access": {"allow_classifications": ["public", "internal"], "allow_actions": ["read"]},
+        },
+        "permissive": {
+            "tools": {"allow": [], "deny": []},
+            "egress": {"allow_domains": []},
+            "models": {"allow": []},
+            "data_access": {"allow_classifications": ["public", "internal", "restricted"], "allow_actions": ["read", "write"]},
+        },
+    }
+    if name not in presets:
+        raise ValueError("Unknown safety preset")
+    return presets[name]
+
+
+def validate_policy_content(content: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    tools = content.get("tools", {})
+    if not isinstance(tools, dict):
+        errors.append("tools must be an object")
+    egress = content.get("egress", {})
+    if not isinstance(egress, dict):
+        errors.append("egress must be an object")
+    models = content.get("models", {})
+    if not isinstance(models, dict):
+        errors.append("models must be an object")
+    data_access = content.get("data_access", {})
+    if data_access and not isinstance(data_access, dict):
+        errors.append("data_access must be an object")
+    return errors

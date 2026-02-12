@@ -1,275 +1,138 @@
 # Agent SDK
 
-A modular, extensible agent framework featuring:
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-- Planner + Executor architecture
-- Tooling system with decorators and registry
-- LLM abstraction layer
-- Rate limiting (per model/agent, tokens + calls)
-- Observability (events, sinks, dashboard backend)
-- Plugin system (tools, agents, LLM providers via entry points)
-- Async support (LLM, tools, runtime)
-- CLI (`agent-sdk`)
-- Local agent server (FastAPI)
-- Dashboard (FastAPI + SSE)
+Agent SDK is a battery-included platform for building and operating AI agents. It ships a planner/executor runtime, multi-tenant control plane, observability, governance, and deployment scaffolding so teams can ship production platforms without custom glue.
 
-## ✨ Production-Ready Features
+## Highlights
+- Planner + executor runtime with streaming
+- Tool registry + packs + schema generation
+- Multi-tenant org/project model and API keys
+- Policy bundles, approvals, and safety guardrails
+- Audit logs with hash chaining and export
+- Webhooks with retries/DLQ and signatures
+- Usage, quotas, retention, and privacy exports
+- Health checks, OpenTelemetry, Prometheus
+- Durable queue + scheduler + replay
+- CLI utilities for ops, backup, compliance
+- Docker/K8s/Helm + Terraform references
 
-✅ **Security**: API authentication, input validation, PII filtering  
-✅ **Reliability**: Retry logic, error recovery, memory bounds  
-✅ **Observability**: JSON logging, events, health checks  
-✅ **Testing**: 59 tests with fixtures, CI/CD ready  
-✅ **Deployment**: Docker, docker-compose, environment config  
+## Production-Grade Features
 
-**Status**: Production Ready | Issues Resolved: 18/18 | Tests: 59
+**Security & Access**
+- API keys, JWT auth, RBAC scopes
+- Project-scoped API keys
+- IP allowlists and rate limits
+- Tool allowlists (filesystem + HTTP)
+- Identity providers (OIDC/SAML) and SCIM
 
----
+**Governance & Compliance**
+- Policy bundles + approvals + assignments
+- Safety policy presets + validation
+- Audit logs with hash chaining + export
+- Webhooks for run/session/audit events
+- Compliance report CLI
+- GDPR/CCPA privacy export bundles
 
-## 📚 Documentation
+**Reliability & Ops**
+- Retries, circuit breakers, replay mode
+- Durable queues and scheduler
+- Provider health checks + failover hooks
+- Retention policies and data deletion APIs
+- Backup/restore (SQLite/Postgres)
 
-All documentation is organized in the [`documents/`](documents/) folder.
+**Observability**
+- Structured logs and metrics
+- OpenTelemetry export (OTLP/stdout)
+- Prometheus metrics endpoint
+- Event streaming (SSE)
 
-### 🚀 Quick Start (5 minutes)
-- **[Getting Started](documents/00_GETTING_STARTED.md)** - Overview of all 18 issues resolved
-- **[Quick Reference](documents/QUICK_REFERENCE.md)** - Code examples for all modules
-- **[User Manual](documents/USER_MANUAL.md)** - End-user guide and API reference
-- **[Documentation Index](documents/00_DOCUMENTATION_INDEX.md)** - Full navigation guide
+## Quick Start
 
-### 📖 Comprehensive Guides
-- **[Production Implementation Report](documents/PRODUCTION_IMPLEMENTATION_REPORT.md)** - Complete technical details
-- **[Production Checklist](documents/PRODUCTION_CHECKLIST.md)** - Verification of all 18 issues ✅
-- **[Implementation Summary](documents/IMPLEMENTATION_SUMMARY.md)** - Executive summary
-- **[Build & Distribution](documents/BUILD_AND_DISTRIBUTION.md)** - How to build and distribute the SDK
-
-### 📊 Details & Analysis
-- **[Analysis Summary](documents/ANALYSIS_SUMMARY.md)** - Analysis phase details
-- **[Implementation Checklist](documents/IMPLEMENTATION_CHECKLIST.md)** - Implementation specifics
-
-### 📖 Access Documentation Programmatically
-
-After installation, access documentation directly from Python:
-
-```python
-from agent_sdk import docs
-
-# Get user manual
-manual = docs.get_user_manual()
-print(manual)
-
-# Get quick reference
-reference = docs.get_quick_reference()
-print(reference)
-
-# List all available docs
-all_docs = docs.list_documentation()
-print(f"Available: {', '.join(all_docs)}")
-
-# Get docs directory path
-docs_path = docs.get_docs_path()
-print(f"Docs location: {docs_path}")
-```
-
-### 📖 Access via CLI
-
-```bash
-# Show documentation info
-agent-sdk docs --info
-
-# Show user manual
-agent-sdk docs --manual
-
-# Show quick reference
-agent-sdk docs --reference
-
-# List all documentation
-agent-sdk docs --list
-```
-
----
-
-## 🎯 What Was Accomplished
-
-### All 18 Production-Readiness Issues Resolved ✅
-
-**CRITICAL (7)**
-- Custom exception hierarchy with error codes
-- Structured JSON logging with context
-- Pydantic input validation at all boundaries
-- API key authentication and authorization
-- Configuration validation at startup
-- Docker deployment infrastructure
-- Memory-bounded message retention
-
-**HIGH PRIORITY (6)**
-- Exponential backoff retry logic for LLM
-- Planner error handling and recovery
-- Executor error isolation and reporting
-- Thread-safe rate limiting with locks
-- Health check endpoints (/health, /ready)
-- API validation and security features
-
-**MEDIUM & LOW (5)**
-- Test infrastructure with 59 comprehensive tests
-- Updated dependencies and configuration
-- Observability events throughout codebase
-- CLI robustness foundation
-
-### Code Statistics
-- **1,500+ lines** of production code
-- **6 new modules** created
-- **7 existing modules** enhanced
-- **59 tests** across 6 modules
-- **6 exception types** with error codes
-- **10+ validation models** with Pydantic
-- **2 deployment files** (Dockerfile, docker-compose)
-
----
-
-## 📁 Project Structure
-
-```
-agent_sdk/                    # Source code (production-grade)
-├── exceptions.py            # Custom exception hierarchy
-├── logging_config.py        # Structured JSON logging
-├── validators.py            # Pydantic validation schemas
-├── security.py              # API auth & PII filtering
-├── core/
-│   ├── retry.py            # Exponential backoff retry
-│   ├── context.py          # Memory management
-│   └── ...
-├── config/
-│   ├── loader.py           # Configuration validation
-│   ├── rate_limit.py       # Thread-safe rate limiting
-│   └── ...
-└── ...
-
-documents/                    # Documentation (18 comprehensive guides)
-├── 00_GETTING_STARTED.md
-├── QUICK_REFERENCE.md
-├── PRODUCTION_*.md
-└── ...
-
-tests/                        # Test suite (59 tests)
-├── conftest.py
-├── test_exceptions.py
-├── test_validators.py
-├── test_security.py
-├── test_rate_limiter.py
-├── test_api.py
-└── test_integration.py
-
-Dockerfile                    # Container image
-docker-compose.yml            # Local development
-```
-
----
-
-## 🚀 Quick Start
-
-### Install & Setup
+### Install
 ```bash
 pip install -e .
-pip install pytest pytest-asyncio
 ```
 
 ### Run Tests
 ```bash
-pytest tests/ -v              # All tests
-pytest tests/test_api.py -v   # Specific module
+pytest
 ```
 
-### Deploy with Docker
+### Run Server (Local)
 ```bash
-docker-compose up
-curl http://localhost:8000/health
-```
-
-### API Usage
-```bash
-# Set API key
 export API_KEY="your-key"
+python -m agent_sdk.server.app
+```
 
-# Run task
+### Execute a Task
+```bash
 curl -X POST http://localhost:8000/run \
   -H "X-API-Key: your-key" \
   -H "Content-Type: application/json" \
-  -d '{"task": "Do something"}'
+  -d '{"task": "Summarize this text"}'
 ```
 
----
-
-## 🔑 Key Features
-
-### Exception Handling
-Custom exception hierarchy with error codes for better debugging:
-```python
-from agent_sdk.exceptions import ToolError, LLMError
-raise ToolError("message", code="TOOL_001", context={...})
-```
-
-### Structured Logging
-JSON-formatted logs with request context:
-```python
-from agent_sdk.logging_config import logger
-logger.info("Task started", extra={"task_id": "123"})
-```
-
-### Input Validation
-Pydantic schemas validate all inputs automatically:
-```python
-from agent_sdk.validators import RunTaskRequest
-request = RunTaskRequest(task="Do something")
-```
-
-### API Security
-Authentication via X-API-Key header:
-```python
-@app.post("/run", dependencies=[Depends(verify_api_key)])
-async def run_task(request: RunTaskRequest):
-    pass
-```
-
-### Retry Logic
-Exponential backoff for transient failures:
-```python
-from agent_sdk.core.retry import retry_with_backoff
-result = await retry_with_backoff(llm_call, max_retries=3)
-```
-
----
-
-## ✅ Production Readiness Checklist
-
-- [x] Custom exceptions with error codes
-- [x] Structured JSON logging
-- [x] Pydantic input validation
-- [x] API key authentication
-- [x] Configuration validation
-- [x] Docker deployment
-- [x] Thread-safe rate limiting
-- [x] Memory-bounded retention
-- [x] Exponential backoff retry
-- [x] Comprehensive error handling
-- [x] Health check endpoints
-- [x] 59 comprehensive tests
-- [x] Enterprise documentation
-- [x] Type hints throughout
-- [x] Production-ready 🚀
-
----
-
-## 📖 Original Quickstart
-
+## CLI
 ```bash
-pip install -e .
-agent-sdk init project my-app
-cd my-app
-python -c "from tools import echo; print('ok')"
+# Diagnostics
+agent-sdk doctor
+
+# Compatibility check
+agent-sdk compat upgrade-check 0.2.0
+
+# Backups
+agent-sdk backup list
+
+# Compliance report
+agent-sdk compliance-report report --output compliance_report.zip
 ```
 
----
+## Documentation
 
-**Status**: ✅ **PRODUCTION READY**  
-**Documentation**: See [`documents/`](documents/) folder  
-**Latest Update**: February 2024
+Core docs live in `docs/` and delivery plans in `documents/`.
 
+Key references:
+- `docs/PRODUCTION_HARDENING.md`
+- `docs/BACKUP_RECOVERY.md`
+- `docs/OBSERVABILITY.md`
+- `docs/RELEASE_HARDENING.md`
+- `docs/COMPATIBILITY.md`
+- `docs/DEPRECATION_POLICY.md`
+
+## Project Structure (High-Level)
+```
+agent_sdk/
+  core/              # runtime, tools, streaming
+  server/            # FastAPI server + admin endpoints
+  storage/           # SQLite/Postgres adapters
+  observability/     # metrics, tracing, audit logs
+  policy/            # governance policy engine
+  testing/           # mocks + fixtures
+  cli/               # agent-sdk CLI
+
+docs/                # production and ops docs
+ documents/          # platform plan and tracking
+ deploy/             # helm/k8s/terraform, env examples
+ tests/              # test suite
+```
+
+## Admin API Surface (Selected)
+- `POST /admin/projects`, `GET /admin/projects`, `DELETE /admin/projects/{id}`
+- `POST /admin/api-keys`, `GET /admin/api-keys`, `DELETE /admin/api-keys/{id}`
+- `POST /admin/policy-bundles`, `POST /admin/policy-approvals`, `POST /admin/policy-assignments`
+- `POST /admin/quotas`, `POST /admin/quotas/projects`, `POST /admin/quotas/api-keys`
+- `GET /admin/usage`, `GET /admin/usage/export`, `GET /admin/usage/projects`, `GET /admin/usage/api-keys`
+- `POST /admin/archives/export`, `POST /admin/archives/restore`
+- `POST /admin/privacy/export`
+- `GET /admin/providers/health`
+
+## Deployment
+- Docker: `Dockerfile`, `docker-compose.yml`
+- K8s/Helm: `deploy/k8s`, `deploy/helm`
+- Terraform reference: `deploy/terraform`
+- Environment examples: `deploy/env/*.env.example`
+
+## Support Matrix
+- Python: 3.9+\n- Storage: SQLite, Postgres\n- OS: macOS, Linux\n\n## Security & Compliance Notes\n- Secrets never need to be committed; use `AGENT_SDK_JWT_SECRET`, secrets managers, or file providers.\n- Audit logs can be exported for compliance and are tamper-evident with hash chaining.\n- Privacy exports available for GDPR/CCPA workflows.\n\n## Status
+Phase 1–10 are complete. See `documents/BATTERY_INCLUDED_PLATFORM_PLAN.md` for the full roadmap and status.

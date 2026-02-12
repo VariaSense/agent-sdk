@@ -56,3 +56,54 @@ def test_quota_blocks_runs(client):
         json={"task": "hello"},
     )
     assert response.status_code == 429
+
+
+def test_project_quota_blocks_runs(client):
+    project = client.post(
+        "/admin/projects",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "name": "Quota Project"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["project_id"]
+    key_resp = client.post(
+        "/admin/api-keys",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "project_id": project_id, "label": "project-key"},
+    )
+    assert key_resp.status_code == 200
+    project_key = key_resp.json()["key"]
+    quota = client.post(
+        "/admin/quotas/projects",
+        headers={"X-API-Key": "test-key"},
+        json={"project_id": project_id, "max_runs": 0},
+    )
+    assert quota.status_code == 200
+    response = client.post(
+        "/run",
+        headers={"X-API-Key": project_key},
+        json={"task": "hello"},
+    )
+    assert response.status_code == 429
+
+
+def test_api_key_quota_blocks_runs(client):
+    key_resp = client.post(
+        "/admin/api-keys",
+        headers={"X-API-Key": "test-key"},
+        json={"org_id": "default", "label": "key-quota"},
+    )
+    assert key_resp.status_code == 200
+    key = key_resp.json()["key"]
+    quota = client.post(
+        "/admin/quotas/api-keys",
+        headers={"X-API-Key": "test-key"},
+        json={"key": key, "max_runs": 0},
+    )
+    assert quota.status_code == 200
+    response = client.post(
+        "/run",
+        headers={"X-API-Key": key},
+        json={"task": "hello"},
+    )
+    assert response.status_code == 429

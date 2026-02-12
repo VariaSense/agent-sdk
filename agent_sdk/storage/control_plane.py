@@ -19,7 +19,7 @@ from agent_sdk.server.multi_tenant import (
     SecretRotationPolicy,
 )
 from agent_sdk.webhooks import WebhookSubscription
-from agent_sdk.policy.types import PolicyAssignment, PolicyBundle
+from agent_sdk.policy.types import PolicyAssignment, PolicyBundle, PolicyApproval
 
 try:
     import psycopg
@@ -46,6 +46,9 @@ class ControlPlaneBackend:
     def get_project(self, project_id: str) -> Optional[Project]:
         raise NotImplementedError
 
+    def delete_project(self, project_id: str) -> bool:
+        raise NotImplementedError
+
     def create_user(self, org_id: str, user: User) -> User:
         raise NotImplementedError
 
@@ -64,10 +67,25 @@ class ControlPlaneBackend:
     def deactivate_api_key(self, key_id: str, rotated_at: str) -> None:
         raise NotImplementedError
 
+    def delete_api_key(self, key_id: str) -> bool:
+        raise NotImplementedError
+
     def set_quota(self, org_id: str, quota: QuotaLimits) -> None:
         raise NotImplementedError
 
     def get_quota(self, org_id: str) -> QuotaLimits:
+        raise NotImplementedError
+
+    def set_project_quota(self, project_id: str, quota: QuotaLimits) -> None:
+        raise NotImplementedError
+
+    def get_project_quota(self, project_id: str) -> QuotaLimits:
+        raise NotImplementedError
+
+    def set_api_key_quota(self, key: str, quota: QuotaLimits) -> None:
+        raise NotImplementedError
+
+    def get_api_key_quota(self, key: str) -> QuotaLimits:
         raise NotImplementedError
 
     def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
@@ -110,6 +128,25 @@ class ControlPlaneBackend:
         raise NotImplementedError
 
     def get_policy_assignment(self, org_id: str) -> Optional[PolicyAssignment]:
+        raise NotImplementedError
+
+    def create_policy_approval(self, approval: PolicyApproval) -> PolicyApproval:
+        raise NotImplementedError
+
+    def get_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        org_id: Optional[str] = None,
+    ) -> Optional[PolicyApproval]:
+        raise NotImplementedError
+
+    def list_policy_approvals(
+        self,
+        bundle_id: Optional[str] = None,
+        status: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> List[PolicyApproval]:
         raise NotImplementedError
 
     def create_backup_record(self, record: BackupRecord) -> BackupRecord:
@@ -210,6 +247,28 @@ class SQLiteControlPlane(ControlPlaneBackend):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS project_quotas (
+                    project_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    max_runs INTEGER,
+                    max_sessions INTEGER,
+                    max_tokens INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_key_quotas (
+                    key TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    max_runs INTEGER,
+                    max_sessions INTEGER,
+                    max_tokens INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS policy_bundles (
                     bundle_id TEXT,
                     version INTEGER,
@@ -217,6 +276,22 @@ class SQLiteControlPlane(ControlPlaneBackend):
                     description TEXT,
                     created_at TEXT,
                     PRIMARY KEY (bundle_id, version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_approvals (
+                    bundle_id TEXT,
+                    version INTEGER,
+                    org_id TEXT,
+                    status TEXT,
+                    submitted_by TEXT,
+                    reviewed_by TEXT,
+                    submitted_at TEXT,
+                    reviewed_at TEXT,
+                    notes TEXT,
+                    PRIMARY KEY (bundle_id, version, org_id)
                 )
                 """
             )
@@ -401,6 +476,12 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 tags=json.loads(row["tags_json"] or "{}"),
             )
 
+    def delete_project(self, project_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM project_quotas WHERE project_id = ?", (project_id,))
+            return cur.rowcount > 0
+
     def create_user(self, org_id: str, user: User) -> User:
         self.ensure_org(org_id)
         with self._connect() as conn:
@@ -511,6 +592,15 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 (rotated_at, key_id),
             )
 
+    def delete_api_key(self, key_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT key FROM api_keys WHERE key_id = ?", (key_id,)).fetchone()
+            key_value = row["key"] if row else None
+            cur = conn.execute("DELETE FROM api_keys WHERE key_id = ?", (key_id,))
+            if key_value:
+                conn.execute("DELETE FROM api_key_quotas WHERE key = ?", (key_value,))
+            return cur.rowcount > 0
+
     def set_quota(self, org_id: str, quota: QuotaLimits) -> None:
         self.ensure_org(org_id)
         with self._connect() as conn:
@@ -526,6 +616,64 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 return QuotaLimits()
             data = json.loads(row["quotas_json"] or "{}")
             return QuotaLimits(**data)
+
+    def set_project_quota(self, project_id: str, quota: QuotaLimits) -> None:
+        with self._connect() as conn:
+            org_id = None
+            row = conn.execute("SELECT org_id FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+            if row:
+                org_id = row["org_id"]
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO project_quotas (project_id, org_id, max_runs, max_sessions, max_tokens)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    org_id,
+                    quota.max_runs,
+                    quota.max_sessions,
+                    quota.max_tokens,
+                ),
+            )
+
+    def get_project_quota(self, project_id: str) -> QuotaLimits:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT max_runs, max_sessions, max_tokens FROM project_quotas WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if not row:
+                return QuotaLimits()
+            return QuotaLimits(max_runs=row[0], max_sessions=row[1], max_tokens=row[2])
+
+    def set_api_key_quota(self, key: str, quota: QuotaLimits) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT org_id FROM api_keys WHERE key = ?", (key,)).fetchone()
+            org_id = row["org_id"] if row else None
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO api_key_quotas (key, org_id, max_runs, max_sessions, max_tokens)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    org_id,
+                    quota.max_runs,
+                    quota.max_sessions,
+                    quota.max_tokens,
+                ),
+            )
+
+    def get_api_key_quota(self, key: str) -> QuotaLimits:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT max_runs, max_sessions, max_tokens FROM api_key_quotas WHERE key = ?",
+                (key,),
+            ).fetchone()
+            if not row:
+                return QuotaLimits()
+            return QuotaLimits(max_runs=row[0], max_sessions=row[1], max_tokens=row[2])
 
     def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
         self.ensure_org(org_id)
@@ -727,6 +875,95 @@ class SQLiteControlPlane(ControlPlaneBackend):
                 version=row["policy_bundle_version"],
                 overrides=json.loads(row["policy_overrides_json"] or "{}"),
             )
+
+    def create_policy_approval(self, approval: PolicyApproval) -> PolicyApproval:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO policy_approvals (
+                    bundle_id, version, org_id, status, submitted_by, reviewed_by,
+                    submitted_at, reviewed_at, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    approval.bundle_id,
+                    approval.version,
+                    approval.org_id,
+                    approval.status,
+                    approval.submitted_by,
+                    approval.reviewed_by,
+                    approval.submitted_at,
+                    approval.reviewed_at,
+                    approval.notes,
+                ),
+            )
+        return approval
+
+    def get_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        org_id: Optional[str] = None,
+    ) -> Optional[PolicyApproval]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM policy_approvals
+                WHERE bundle_id = ? AND version = ? AND org_id IS ?
+                """,
+                (bundle_id, version, org_id),
+            ).fetchone()
+            if not row:
+                return None
+            return PolicyApproval(
+                bundle_id=row["bundle_id"],
+                version=row["version"],
+                status=row["status"],
+                submitted_by=row["submitted_by"],
+                reviewed_by=row["reviewed_by"],
+                submitted_at=row["submitted_at"],
+                reviewed_at=row["reviewed_at"],
+                notes=row["notes"],
+                org_id=row["org_id"],
+            )
+
+    def list_policy_approvals(
+        self,
+        bundle_id: Optional[str] = None,
+        status: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> List[PolicyApproval]:
+        query = "SELECT * FROM policy_approvals"
+        conditions = []
+        params: List[object] = []
+        if bundle_id:
+            conditions.append("bundle_id = ?")
+            params.append(bundle_id)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if org_id is not None:
+            conditions.append("org_id IS ?")
+            params.append(org_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY submitted_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [
+                PolicyApproval(
+                    bundle_id=row["bundle_id"],
+                    version=row["version"],
+                    status=row["status"],
+                    submitted_by=row["submitted_by"],
+                    reviewed_by=row["reviewed_by"],
+                    submitted_at=row["submitted_at"],
+                    reviewed_at=row["reviewed_at"],
+                    notes=row["notes"],
+                    org_id=row["org_id"],
+                )
+                for row in rows
+            ]
 
     def create_backup_record(self, record: BackupRecord) -> BackupRecord:
         with self._connect() as conn:
@@ -960,6 +1197,28 @@ class PostgresControlPlane(ControlPlaneBackend):
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS project_quotas (
+                    project_id TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    max_runs INTEGER,
+                    max_sessions INTEGER,
+                    max_tokens INTEGER
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_key_quotas (
+                    key TEXT PRIMARY KEY,
+                    org_id TEXT,
+                    max_runs INTEGER,
+                    max_sessions INTEGER,
+                    max_tokens INTEGER
+                );
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS policy_bundles (
                     bundle_id TEXT,
                     version INTEGER,
@@ -967,6 +1226,22 @@ class PostgresControlPlane(ControlPlaneBackend):
                     description TEXT,
                     created_at TEXT,
                     PRIMARY KEY (bundle_id, version)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_approvals (
+                    bundle_id TEXT,
+                    version INTEGER,
+                    org_id TEXT,
+                    status TEXT,
+                    submitted_by TEXT,
+                    reviewed_by TEXT,
+                    submitted_at TEXT,
+                    reviewed_at TEXT,
+                    notes TEXT,
+                    PRIMARY KEY (bundle_id, version, org_id)
                 );
                 """
             )
@@ -1134,6 +1409,14 @@ class PostgresControlPlane(ControlPlaneBackend):
                 tags=row[4] or {},
             )
 
+    def delete_project(self, project_id: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM project_quotas WHERE project_id = %s", (project_id,))
+            cur.execute("DELETE FROM projects WHERE project_id = %s", (project_id,))
+            deleted = cur.rowcount > 0
+        self._conn.commit()
+        return deleted
+
     def create_user(self, org_id: str, user: User) -> User:
         self.ensure_org(org_id)
         with self._conn.cursor() as cur:
@@ -1251,6 +1534,18 @@ class PostgresControlPlane(ControlPlaneBackend):
             )
         self._conn.commit()
 
+    def delete_api_key(self, key_id: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT key FROM api_keys WHERE key_id = %s", (key_id,))
+            row = cur.fetchone()
+            key_value = row[0] if row else None
+            cur.execute("DELETE FROM api_keys WHERE key_id = %s", (key_id,))
+            deleted = cur.rowcount > 0
+            if key_value:
+                cur.execute("DELETE FROM api_key_quotas WHERE key = %s", (key_value,))
+        self._conn.commit()
+        return deleted
+
     def set_quota(self, org_id: str, quota: QuotaLimits) -> None:
         self.ensure_org(org_id)
         with self._conn.cursor() as cur:
@@ -1267,6 +1562,80 @@ class PostgresControlPlane(ControlPlaneBackend):
             if not row or not row[0]:
                 return QuotaLimits()
             return QuotaLimits(**row[0])
+
+    def set_project_quota(self, project_id: str, quota: QuotaLimits) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT org_id FROM projects WHERE project_id = %s", (project_id,))
+            row = cur.fetchone()
+            org_id = row[0] if row else None
+            cur.execute(
+                """
+                INSERT INTO project_quotas (project_id, org_id, max_runs, max_sessions, max_tokens)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (project_id)
+                DO UPDATE SET
+                    org_id = EXCLUDED.org_id,
+                    max_runs = EXCLUDED.max_runs,
+                    max_sessions = EXCLUDED.max_sessions,
+                    max_tokens = EXCLUDED.max_tokens
+                """,
+                (
+                    project_id,
+                    org_id,
+                    quota.max_runs,
+                    quota.max_sessions,
+                    quota.max_tokens,
+                ),
+            )
+        self._conn.commit()
+
+    def get_project_quota(self, project_id: str) -> QuotaLimits:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT max_runs, max_sessions, max_tokens FROM project_quotas WHERE project_id = %s",
+                (project_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return QuotaLimits()
+            return QuotaLimits(max_runs=row[0], max_sessions=row[1], max_tokens=row[2])
+
+    def set_api_key_quota(self, key: str, quota: QuotaLimits) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT org_id FROM api_keys WHERE key = %s", (key,))
+            row = cur.fetchone()
+            org_id = row[0] if row else None
+            cur.execute(
+                """
+                INSERT INTO api_key_quotas (key, org_id, max_runs, max_sessions, max_tokens)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (key)
+                DO UPDATE SET
+                    org_id = EXCLUDED.org_id,
+                    max_runs = EXCLUDED.max_runs,
+                    max_sessions = EXCLUDED.max_sessions,
+                    max_tokens = EXCLUDED.max_tokens
+                """,
+                (
+                    key,
+                    org_id,
+                    quota.max_runs,
+                    quota.max_sessions,
+                    quota.max_tokens,
+                ),
+            )
+        self._conn.commit()
+
+    def get_api_key_quota(self, key: str) -> QuotaLimits:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT max_runs, max_sessions, max_tokens FROM api_key_quotas WHERE key = %s",
+                (key,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return QuotaLimits()
+            return QuotaLimits(max_runs=row[0], max_sessions=row[1], max_tokens=row[2])
 
     def set_retention_policy(self, org_id: str, policy: RetentionPolicyConfig) -> None:
         self.ensure_org(org_id)
@@ -1481,6 +1850,108 @@ class PostgresControlPlane(ControlPlaneBackend):
                 version=row[1],
                 overrides=row[2] or {},
             )
+
+    def create_policy_approval(self, approval: PolicyApproval) -> PolicyApproval:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO policy_approvals (
+                    bundle_id, version, org_id, status, submitted_by, reviewed_by,
+                    submitted_at, reviewed_at, notes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (bundle_id, version, org_id)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    submitted_by = EXCLUDED.submitted_by,
+                    reviewed_by = EXCLUDED.reviewed_by,
+                    submitted_at = EXCLUDED.submitted_at,
+                    reviewed_at = EXCLUDED.reviewed_at,
+                    notes = EXCLUDED.notes
+                """,
+                (
+                    approval.bundle_id,
+                    approval.version,
+                    approval.org_id,
+                    approval.status,
+                    approval.submitted_by,
+                    approval.reviewed_by,
+                    approval.submitted_at,
+                    approval.reviewed_at,
+                    approval.notes,
+                ),
+            )
+        self._conn.commit()
+        return approval
+
+    def get_policy_approval(
+        self,
+        bundle_id: str,
+        version: int,
+        org_id: Optional[str] = None,
+    ) -> Optional[PolicyApproval]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bundle_id, version, org_id, status, submitted_by, reviewed_by,
+                       submitted_at, reviewed_at, notes
+                FROM policy_approvals
+                WHERE bundle_id = %s AND version = %s AND org_id IS NOT DISTINCT FROM %s
+                """,
+                (bundle_id, version, org_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return PolicyApproval(
+                bundle_id=row[0],
+                version=row[1],
+                org_id=row[2],
+                status=row[3],
+                submitted_by=row[4],
+                reviewed_by=row[5],
+                submitted_at=row[6],
+                reviewed_at=row[7],
+                notes=row[8],
+            )
+
+    def list_policy_approvals(
+        self,
+        bundle_id: Optional[str] = None,
+        status: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> List[PolicyApproval]:
+        query = "SELECT bundle_id, version, org_id, status, submitted_by, reviewed_by, submitted_at, reviewed_at, notes FROM policy_approvals"
+        conditions = []
+        params: List[object] = []
+        if bundle_id:
+            conditions.append("bundle_id = %s")
+            params.append(bundle_id)
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        if org_id is not None:
+            conditions.append("org_id IS NOT DISTINCT FROM %s")
+            params.append(org_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY submitted_at DESC"
+        with self._conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            return [
+                PolicyApproval(
+                    bundle_id=row[0],
+                    version=row[1],
+                    org_id=row[2],
+                    status=row[3],
+                    submitted_by=row[4],
+                    reviewed_by=row[5],
+                    submitted_at=row[6],
+                    reviewed_at=row[7],
+                    notes=row[8],
+                )
+                for row in rows
+            ]
 
     def create_backup_record(self, record: BackupRecord) -> BackupRecord:
         with self._conn.cursor() as cur:

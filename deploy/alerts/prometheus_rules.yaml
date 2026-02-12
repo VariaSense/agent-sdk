@@ -1,0 +1,27 @@
+groups:
+  - name: agent_sdk_slo
+    rules:
+      - alert: AgentSDKHighErrorRate
+        expr: sum(rate(agent_sdk_requests_total{status=~"5.."}[5m])) / sum(rate(agent_sdk_requests_total[5m])) > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "High 5xx error rate"
+          description: "5xx responses exceed 2% for 10m. Check recent deploys and dependencies."
+      - alert: AgentSDKHighLatency
+        expr: histogram_quantile(0.95, sum(rate(agent_sdk_request_duration_seconds_bucket[5m])) by (le)) > 1.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "High p95 latency"
+          description: "p95 request latency above 1.5s for 10m. Review saturation and backlog."
+      - alert: AgentSDKRunQueueBacklog
+        expr: max(agent_sdk_durable_queue_backlog) > 100
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Run queue backlog"
+          description: "Durable queue backlog exceeds 100 for 15m. Inspect workers and storage."

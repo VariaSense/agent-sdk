@@ -71,3 +71,94 @@ class ToolMock:
 
     def as_tool(self) -> Tool:
         return Tool(name=self.name, description=self.description, func=self)
+
+
+class InMemoryStorage:
+    """Simple in-memory storage backend for contract tests."""
+
+    def __init__(self) -> None:
+        self._sessions: Dict[str, Any] = {}
+        self._runs: Dict[str, Any] = {}
+        self._events: Dict[str, List[Any]] = {}
+
+    def create_session(self, session: Any) -> None:
+        self._sessions[session.session_id] = session
+
+    def update_session(self, session: Any) -> None:
+        self._sessions[session.session_id] = session
+
+    def get_session(self, session_id: str) -> Optional[Any]:
+        return self._sessions.get(session_id)
+
+    def list_sessions(self, limit: int = 100) -> List[Any]:
+        return list(self._sessions.values())[:limit]
+
+    def create_run(self, run: Any) -> None:
+        self._runs[run.run_id] = run
+
+    def update_run(self, run: Any) -> None:
+        self._runs[run.run_id] = run
+
+    def get_run(self, run_id: str) -> Optional[Any]:
+        return self._runs.get(run_id)
+
+    def list_runs(self, org_id: Optional[str] = None, limit: int = 1000) -> List[Any]:
+        runs = list(self._runs.values())
+        if org_id is not None:
+            runs = [run for run in runs if getattr(run, "org_id", None) == org_id]
+        return runs[:limit]
+
+    def append_event(self, event: Any) -> None:
+        self._events.setdefault(event.run_id, []).append(event)
+
+    def list_events(self, run_id: str, limit: int = 1000) -> List[Any]:
+        return list(self._events.get(run_id, []))[:limit]
+
+    def list_events_from(
+        self,
+        run_id: str,
+        from_seq: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[Any]:
+        events = list(self._events.get(run_id, []))
+        if from_seq is not None:
+            events = [event for event in events if event.seq is None or event.seq >= from_seq]
+        return events[:limit]
+
+    def delete_events(self, run_id: str, before_seq: Optional[int] = None) -> int:
+        events = list(self._events.get(run_id, []))
+        if before_seq is None:
+            deleted = len(events)
+            self._events[run_id] = []
+            return deleted
+        remaining = [event for event in events if event.seq is not None and event.seq >= before_seq]
+        deleted = len(events) - len(remaining)
+        self._events[run_id] = remaining
+        return deleted
+
+    def recover_in_flight_runs(self) -> int:
+        return 0
+
+    def delete_run(self, run_id: str) -> int:
+        removed = 1 if run_id in self._runs else 0
+        self._runs.pop(run_id, None)
+        self._events.pop(run_id, None)
+        return removed
+
+    def delete_session(self, session_id: str) -> int:
+        removed = 1 if session_id in self._sessions else 0
+        self._sessions.pop(session_id, None)
+        runs_to_delete = [run_id for run_id, run in self._runs.items() if run.session_id == session_id]
+        for run_id in runs_to_delete:
+            self.delete_run(run_id)
+        return removed
+
+
+class DummyWebhookSender:
+    """Webhook sender that records payloads for assertions."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def send(self, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> None:
+        self.calls.append({"payload": payload, "headers": headers or {}})
