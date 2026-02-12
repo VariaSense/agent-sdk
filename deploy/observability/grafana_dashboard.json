@@ -1,0 +1,97 @@
+{
+  "uid": "agent-sdk-overview",
+  "title": "Agent SDK Overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Agent SDK Up",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [
+        {
+          "expr": "agent_sdk_up",
+          "legendFormat": "up"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency P95 (ms)",
+      "gridPos": {"x": 4, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "agent_sdk_latency_p95_ms",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency Avg (ms)",
+      "gridPos": {"x": 12, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "agent_sdk_latency_avg_ms",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cost USD Total",
+      "gridPos": {"x": 0, "y": 4, "w": 10, "h": 5},
+      "targets": [
+        {
+          "expr": "agent_sdk_cost_usd_total",
+          "legendFormat": "{{model}}/{{provider}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Input Tokens Total",
+      "gridPos": {"x": 10, "y": 4, "w": 5, "h": 5},
+      "targets": [
+        {
+          "expr": "agent_sdk_input_tokens_total",
+          "legendFormat": "{{model}}/{{provider}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Output Tokens Total",
+      "gridPos": {"x": 15, "y": 4, "w": 5, "h": 5},
+      "targets": [
+        {
+          "expr": "agent_sdk_output_tokens_total",
+          "legendFormat": "{{model}}/{{provider}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Metric Samples",
+      "gridPos": {"x": 0, "y": 9, "w": 10, "h": 5},
+      "targets": [
+        {
+          "expr": "agent_sdk_metric_count",
+          "legendFormat": "{{metric}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Build Info",
+      "gridPos": {"x": 10, "y": 9, "w": 10, "h": 5},
+      "targets": [
+        {
+          "expr": "agent_sdk_build_info",
+          "legendFormat": "{{version}}"
+        }
+      ]
+    }
+  ]
+}

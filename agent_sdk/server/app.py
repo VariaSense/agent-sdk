@@ -85,6 +85,7 @@ from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_l
 from agent_sdk.core.streaming import TokenCounter
 from agent_sdk.core.retry import RetryConfig, retry_with_backoff
 from agent_sdk.privacy import PrivacyExporter
+from agent_sdk.secrets_rotation import find_due_policies, emit_rotation_due
 from agent_sdk.execution.queue import ExecutionQueue
 from agent_sdk.execution.durable_queue import (
     DurableExecutionQueue,
@@ -110,7 +111,12 @@ from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlP
 from agent_sdk.server.channels import handle_web_channel
 from agent_sdk.server.admin_ui import ADMIN_HTML
 from agent_sdk.server.scheduler import Scheduler, SQLiteSchedulerStore
-from agent_sdk.identity.providers import OIDCProvider, SAMLProvider, MockIdentityProvider
+from agent_sdk.identity.providers import (
+    OIDCProvider,
+    SAMLProvider,
+    MockIdentityProvider,
+    load_group_mapping,
+)
 from agent_sdk.encryption import generate_key
 from agent_sdk.sandbox import LocalToolSandbox, DockerToolSandbox
 
@@ -200,6 +206,13 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             storage = SQLiteStorage(db_path)
         archive_backend = LocalArchiveBackend(os.getenv("AGENT_SDK_ARCHIVE_PATH", "archives"))
         privacy_exporter = PrivacyExporter(os.getenv("AGENT_SDK_PRIVACY_EXPORT_PATH", "privacy_exports"))
+        secret_rotation_enabled = os.getenv("AGENT_SDK_SECRET_ROTATION_AUTOMATION", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        secret_rotation_interval = float(os.getenv("AGENT_SDK_SECRET_ROTATION_INTERVAL_SECONDS", "3600"))
         retention_policy = EventRetentionPolicy.from_env()
         redaction_policy = RedactionPolicy.from_env()
         redactor = Redactor(redaction_policy)
@@ -738,15 +751,44 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
     app.state.retry_config = retry_config
     app.state.idempotency_store = idempotency_store
     app.state.identity_provider = identity_provider
+    app.state.secret_rotation_task = None
+    app.state.secret_rotation_enabled = secret_rotation_enabled
+    app.state.secret_rotation_interval = secret_rotation_interval
+
+    async def _secret_rotation_loop() -> None:
+        interval = max(secret_rotation_interval, 1.0)
+        logger.info("Secret rotation automation enabled (interval=%ss)", interval)
+        while True:
+            try:
+                policies = tenant_store.list_secret_rotation_policies()
+                due = find_due_policies(policies)
+                if due:
+                    count = emit_rotation_due(due, audit_logger, webhook_dispatcher)
+                    logger.info("Secret rotation due emitted for %s policies", count)
+            except asyncio.CancelledError:
+                logger.info("Secret rotation automation stopped")
+                raise
+            except Exception:
+                logger.exception("Secret rotation automation failed")
+            await asyncio.sleep(interval)
 
     @app.on_event("startup")
     async def _start_workers():
         if durable_queue is not None:
             await durable_queue.start()
         await scheduler.start()
+        if secret_rotation_enabled:
+            app.state.secret_rotation_task = asyncio.create_task(_secret_rotation_loop())
 
     @app.on_event("shutdown")
     async def _stop_workers():
+        task = app.state.secret_rotation_task
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         if durable_queue is not None:
             await durable_queue.stop()
         await scheduler.stop()
@@ -802,13 +844,20 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
             claims = app.state.identity_provider.validate(req.token)
         except Exception as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
-        return {
+        mapping = load_group_mapping()
+        mapped = mapping.map_groups(claims.groups)
+        response = {
             "subject": claims.subject,
             "email": claims.email,
             "issuer": claims.issuer,
             "groups": claims.groups,
             "raw": claims.raw,
         }
+        if mapped.get("role"):
+            response["role"] = mapped["role"]
+        if mapped.get("scopes"):
+            response["scopes"] = mapped["scopes"]
+        return response
 
     # Task Execution Endpoint
     @app.post(
@@ -871,6 +920,8 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 "request_id": request.state.request_id,
                 "trace_id": request.state.trace_id,
             }
+            if req.lineage:
+                run_metadata["lineage"] = req.lineage
             run_tags = dict(req.tags or {})
             if project_id:
                 run_tags.setdefault("project_id", project_id)
@@ -1046,6 +1097,8 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 )
                 run_store.append_event(run_id, end_event)
                 token_count = sum(TokenCounter.count_tokens(m.content) for m in msgs)
+                completed_metadata = dict(run_metadata)
+                completed_metadata["token_count"] = token_count
                 storage.update_run(
                     RunMetadata(
                         run_id=run_id,
@@ -1054,7 +1107,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         status=RunStatus.COMPLETED,
                         model=model_id,
                         tags=run_tags,
-                        metadata={"token_count": token_count},
+                        metadata=completed_metadata,
                     )
                 )
                 tenant_store.record_tokens(org_id, token_count)
@@ -1091,6 +1144,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                         status=RunStatus.ERROR,
                         model=model_id,
                         tags=run_tags,
+                        metadata=run_metadata,
                     )
                 )
                 webhook_dispatcher.dispatch(
@@ -1151,6 +1205,12 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
         key_fingerprint = _key_fingerprint(key_info.key)
         if key_fingerprint:
             run_tags.setdefault("api_key_fingerprint", key_fingerprint)
+        run_metadata = {
+            "request_id": request.state.request_id,
+            "trace_id": request.state.trace_id,
+        }
+        if req.lineage:
+            run_metadata["lineage"] = req.lineage
         storage.create_run(
             RunMetadata(
                 run_id=run_id,
@@ -1160,6 +1220,7 @@ def create_app(config_path: str = "config.yaml", storage_path: Optional[str] = N
                 status=RunStatus.RUNNING,
                 model=resolved_model,
                 tags=run_tags,
+                metadata=run_metadata,
             )
         )
         tenant_store.record_run(org_id, project_id=project_id, key=key_info.key)

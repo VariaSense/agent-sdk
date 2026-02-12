@@ -5,6 +5,8 @@ import yaml
 import shutil
 import json
 import subprocess
+import csv
+import io
 from datetime import datetime, timezone
 import secrets
 import zipfile
@@ -19,6 +21,8 @@ from agent_sdk.storage.control_plane import SQLiteControlPlane, PostgresControlP
 from agent_sdk.server.multi_tenant import BackupRecord
 from agent_sdk.registry.local import LocalRegistry
 from agent_sdk.tool_packs.manifest import ToolManifest, sign_manifest, default_manifest_secret
+from agent_sdk.storage import SQLiteStorage, PostgresStorage
+from agent_sdk.billing import generate_chargeback_report
 
 run_cmd = typer.Typer(help="Run tasks using the agent runtime")
 tools_cmd = typer.Typer(help="Inspect tools")
@@ -30,6 +34,7 @@ backup_cmd = typer.Typer(help="Backup and restore storage/control plane data")
 registry_cmd = typer.Typer(help="Tool pack registry operations")
 compliance_cmd = typer.Typer(help="Compliance reporting")
 compat_cmd = typer.Typer(help="Versioning and compatibility")
+billing_cmd = typer.Typer(help="Billing and chargeback reporting")
 
 
 def collect_doctor_checks(config: str) -> list[dict]:
@@ -97,6 +102,21 @@ def _load_control_plane_backend():
         path = os.getenv("AGENT_SDK_CONTROL_PLANE_DB_PATH", "control_plane.db")
         return SQLiteControlPlane(path)
     raise typer.BadParameter(f"Unsupported control plane backend: {backend}")
+
+
+def _load_storage_backend():
+    backend = os.getenv("AGENT_SDK_STORAGE_BACKEND", "sqlite").lower()
+    if backend == "postgres":
+        dsn = os.getenv("AGENT_SDK_POSTGRES_DSN")
+        if not dsn:
+            raise typer.BadParameter("AGENT_SDK_POSTGRES_DSN is required for postgres storage")
+        if PostgresStorage is None:
+            raise typer.BadParameter("psycopg is required for postgres storage")
+        return PostgresStorage(dsn)
+    if backend == "sqlite":
+        path = os.getenv("AGENT_SDK_DB_PATH", "agent_sdk.db")
+        return SQLiteStorage(path)
+    raise typer.BadParameter(f"Unsupported storage backend: {backend}")
 
 
 def _require_pg_command(name: str) -> str:
@@ -453,3 +473,40 @@ def compliance_report(output: str = "compliance_report.zip"):
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr("compliance.json", json.dumps(evidence, indent=2))
     typer.echo(f"Wrote {output}")
+
+
+@billing_cmd.command("export")
+def billing_export(
+    format: str = typer.Option("json", "--format", help="Output format: json or csv"),
+    org_id: str = typer.Option(None, "--org-id", help="Filter by org id"),
+    group_by: str = typer.Option("org_id,project", "--group-by", help="Comma-separated group fields"),
+    limit: int = typer.Option(1000, "--limit", help="Max runs to include"),
+    output: str = typer.Option(None, "--output", help="Write output to file"),
+):
+    """Generate a chargeback report from stored runs."""
+    storage = _load_storage_backend()
+    runs = storage.list_runs(org_id=org_id, limit=limit)
+    report = generate_chargeback_report(runs, group_by=group_by)
+    fmt = format.lower()
+    if fmt == "csv":
+        group_fields = [field.strip() for field in group_by.split(",") if field.strip()]
+        if not group_fields:
+            group_fields = ["org_id"]
+        output_buffer = io.StringIO()
+        writer = csv.writer(output_buffer)
+        header = group_fields + ["run_count", "session_count", "token_count", "cost_usd"]
+        writer.writerow(header)
+        for row in report:
+            writer.writerow([row.get(col) for col in header])
+        payload = output_buffer.getvalue()
+    elif fmt == "json":
+        payload = json.dumps({"results": report, "count": len(report)}, indent=2)
+    else:
+        raise typer.BadParameter("format must be json or csv")
+
+    if output:
+        with open(output, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        typer.echo(f"Wrote {output}")
+    else:
+        typer.echo(payload)

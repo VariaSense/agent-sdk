@@ -3,7 +3,7 @@
 ## Purpose
 Deliver a "battery-included" experience on top of agent-sdk while keeping the SDK as the stable agent runtime. This plan defines what to build, in what order, and the concrete deliverables to track implementation.
 
-## Current Status (as of 2026-02-11)
+## Current Status (as of 2026-02-12)
 - Phase 1: Local-first MVP complete.
 - Phase 2: Developer experience + reliability complete.
 - Phase 3: Platform extensions complete.
@@ -14,6 +14,7 @@ Deliver a "battery-included" experience on top of agent-sdk while keeping the SD
 - Phase 8: Governance, DR, and ecosystem maturity complete.
 - Phase 9: Operational excellence & enterprise governance complete.
 - Phase 10: Comprehensive production readiness complete.
+- Phase 11: Enterprise enhancements complete.
 
 ## Scope and Principles
 - Keep agent-sdk as the "agent brain" and developer runtime.
@@ -1088,3 +1089,86 @@ Estimate: 2-3 weeks.
 
 9. Deployment references: Docker/Helm/Terraform + parity checks. **(Completed)**  
 Estimate: 3-4 weeks.
+
+---
+
+## Phase 11: Enterprise Enhancements (final checks, 6-10 weeks)
+
+### Objective
+Add the last mile enhancements that large enterprises often request: dashboards, DR runbooks, IAM mappings, billing adapters, and lineage.
+
+### 11.1 SLO Dashboard Template
+- Provide a Grafana dashboard template for core metrics.
+
+Deliverables:
+- Grafana JSON dashboard template in `deploy/observability/`.
+
+### 11.2 Disaster Recovery Runbooks
+- Add DR runbook and game-day checklist.
+
+Deliverables:
+- `docs/runbooks/disaster_recovery.md`.
+
+### 11.3 Secrets Rotation Automation Hooks
+- Emit rotation due signals and webhook events on a schedule.
+
+Deliverables:
+- Optional background checker + webhook event for `secret.rotation_due`.
+
+### 11.4 IAM Group Mapping Rules
+- Map identity provider groups to roles/scopes.
+
+Deliverables:
+- Group mapping helper + `/auth/validate` enriched response.
+
+### 11.5 API Deprecation Enforcement
+- Confirm deprecation headers for unversioned endpoints.
+
+Deliverables:
+- `X-API-Deprecated` header on unversioned routes (already enforced).
+
+### 11.6 Billing/Chargeback Adapter Sample
+- Provide a sample chargeback report generator.
+
+Deliverables:
+- `agent_sdk/billing.py` + CLI export command.
+
+### 11.7 Data Lineage & Provenance Tags
+- Allow lineage metadata on runs for auditability.
+
+Deliverables:
+- `lineage` metadata field on run creation + docs.
+
+### Exit Criteria
+- Grafana dashboard template available.
+- DR runbook documented.
+- Rotation due events emitted.
+- IAM group mapping available.
+- Deprecation headers validated.
+- Billing sample report available.
+- Lineage metadata captured on runs.
+
+---
+
+## Phase 11 Backlog (Prioritized, Rough Estimates)
+
+1. Grafana dashboard template for core metrics. **(Completed)**  
+Estimate: 1-2 weeks.
+
+2. Disaster recovery runbook + game-day checklist. **(Completed)**  
+Estimate: 1-2 weeks.
+
+3. Secret rotation automation hooks + webhook events. **(Completed)**  
+Estimate: 1-2 weeks.
+
+4. IAM group mapping rules in identity validation flow. **(Completed)**  
+Estimate: 1-2 weeks.
+
+5. API deprecation enforcement confirmation. **(Completed)**  
+Estimate: 1 week.
+
+6. Billing/chargeback adapter sample + CLI export. **(Completed)**  
+Estimate: 2-3 weeks.
+
+7. Data lineage/provenance tags on runs + docs. **(Completed)**  
+Estimate: 1-2 weeks.

@@ -10,6 +10,7 @@ from agent_sdk.cli.commands import (
     registry_cmd,
     compliance_cmd,
     compat_cmd,
+    billing_cmd,
 )
 from agent_sdk import docs as docs_module
 
@@ -25,6 +26,7 @@ app.add_typer(backup_cmd, name="backup")
 app.add_typer(registry_cmd, name="registry")
 app.add_typer(compliance_cmd, name="compliance-report")
 app.add_typer(compat_cmd, name="compat")
+app.add_typer(billing_cmd, name="billing")
 
 
 @app.command()

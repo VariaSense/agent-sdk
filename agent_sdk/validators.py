@@ -17,6 +17,10 @@ class RunTaskRequest(BaseModel):
         default=300, ge=1, le=3600, description="Timeout in seconds"
     )
     tags: Optional[Dict[str, str]] = Field(default=None, description="Cost allocation tags")
+    lineage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Lineage metadata for provenance and audit trails",
+    )
 
     @field_validator("task")
     def task_not_empty(cls, v):
@@ -31,6 +35,7 @@ class RunTaskRequest(BaseModel):
                 "config": "config.yaml",
                 "timeout": 300,
                 "tags": {"project": "alpha", "environment": "staging"},
+                "lineage": {"source": "jira", "ticket": "AGENT-123"},
             }
         }
     )

@@ -12,6 +12,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Tool allowlists: `AGENT_SDK_FS_ALLOWLIST`, `AGENT_SDK_HTTP_ALLOWLIST`.
 - Secrets providers: env/file + Vault + AWS/GCP/Azure secret managers (see `agent_sdk/secrets.py`).
 - Identity providers: `AGENT_SDK_IDP_PROVIDER=mock|oidc|saml` with `/auth/validate`.
+- Group-to-role/scope mapping: `AGENT_SDK_GROUP_ROLE_MAP` and `AGENT_SDK_GROUP_SCOPE_MAP`.
 - SCIM provisioning: set `AGENT_SDK_SCIM_TOKEN` and use `/scim/v2/Users`.
 
 ## Durability and Replay
@@ -35,6 +36,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - PII redaction: `AGENT_SDK_PII_REDACTION_ENABLED=true`.
 - Data residency: set org residency via `/admin/residency` and enforce with `AGENT_SDK_DATA_REGION`.
 - Encryption at rest: enable with `AGENT_SDK_ENCRYPTION_ENABLED=true` and set per-tenant keys via `/admin/encryption-keys`.
+- Lineage metadata: include `lineage` in `/run` requests to persist provenance on runs.
 
 ## Model Management and Quotas
 - Per-tenant model policies via `/admin/model-policies`.
@@ -43,6 +45,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 - Usage export: `/admin/usage/export?group_by=org_id,project` (CSV/JSON).
 - Usage summaries: `/admin/usage/projects`, `/admin/usage/api-keys`.
 - Provider health: `/admin/providers/health`.
+- Chargeback exports: `agent-sdk billing export --group-by org_id,project`.
 
 ## Reliability
 - Queue-based execution: `AGENT_SDK_EXECUTION_MODE=queue`, `AGENT_SDK_WORKER_COUNT=4`.
@@ -65,6 +68,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Metrics and Monitoring
 - Prometheus endpoint: set `AGENT_SDK_PROMETHEUS_ENABLED=true`, scrape `/metrics`.
 - Alert rules reference: `deploy/alerts/prometheus_rules.yaml`.
+- Grafana dashboard template: `deploy/observability/grafana_dashboard.json`.
 - Runbooks: `docs/runbooks/`.
 
 ## Tracing Export (OpenTelemetry)
@@ -90,6 +94,7 @@ This guide documents the production-grade features added in Phase 4 and how to e
 ## Secrets Rotation
 - Rotation policies: `/admin/secrets/rotation`.
 - Rotation health: `/admin/secrets/health`.
+- Rotation automation: `AGENT_SDK_SECRET_ROTATION_AUTOMATION=true` and `AGENT_SDK_SECRET_ROTATION_INTERVAL_SECONDS`.
 
 ## Compliance Reporting
 - Evidence bundle: `agent-sdk compliance-report report --output compliance_report.zip`.

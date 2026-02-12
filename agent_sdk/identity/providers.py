@@ -29,6 +29,36 @@ class IdentityProvider:
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class GroupMapping:
+    role_map: Dict[str, str] = field(default_factory=dict)
+    scope_map: Dict[str, list[str]] = field(default_factory=dict)
+
+    def map_groups(self, groups: list[str]) -> Dict[str, object]:
+        role = None
+        scopes: set[str] = set()
+        for group in groups:
+            if role is None and group in self.role_map:
+                role = self.role_map[group]
+            if group in self.scope_map:
+                scopes.update(self.scope_map[group])
+        return {"role": role, "scopes": sorted(scopes)}
+
+
+def load_group_mapping() -> GroupMapping:
+    role_raw = os.getenv("AGENT_SDK_GROUP_ROLE_MAP", "{}")
+    scope_raw = os.getenv("AGENT_SDK_GROUP_SCOPE_MAP", "{}")
+    try:
+        role_map = json.loads(role_raw)
+    except json.JSONDecodeError:
+        role_map = {}
+    try:
+        scope_map = json.loads(scope_raw)
+    except json.JSONDecodeError:
+        scope_map = {}
+    return GroupMapping(role_map=role_map or {}, scope_map=scope_map or {})
+
+
 class MockIdentityProvider(IdentityProvider):
     """Accepts tokens formatted as JSON payloads for tests."""
 
