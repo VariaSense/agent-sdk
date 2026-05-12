@@ -8,11 +8,13 @@ import zipfile
 from dataclasses import asdict
 from typing import Optional
 
+from agent_sdk._deprecation import warn_platform_ownership
 from agent_sdk.storage.base import StorageBackend
 
 
 class PrivacyExporter:
     def __init__(self, export_dir: str = "privacy_exports") -> None:
+        warn_platform_ownership("agent_sdk.privacy.PrivacyExporter", "agent_platform.privacy.PrivacyExporter")
         self._export_dir = export_dir
         os.makedirs(self._export_dir, exist_ok=True)
 

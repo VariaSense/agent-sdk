@@ -144,6 +144,7 @@ packages = [
     "agent_sdk.agents",
     "agent_sdk.cli",
     "agent_sdk.config",
+    "agent_sdk.contracts",
     "agent_sdk.coordination",
     "agent_sdk.core",
     "agent_sdk.dashboard",
@@ -157,8 +158,10 @@ packages = [
     "agent_sdk.observability",
     "agent_sdk.planning",
     "agent_sdk.plugins",
+    "agent_sdk.ports",
     "agent_sdk.prompt_management",
     "agent_sdk.routing",
+    "agent_sdk.runtime",
     "agent_sdk.server",
 ]
 include-package-data = true

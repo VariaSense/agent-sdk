@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, Dict, Any, List, Sequence, Union
 
+from agent_sdk._deprecation import warn_platform_ownership
 from agent_sdk.observability.stream_envelope import RunMetadata
 
 
@@ -42,6 +43,7 @@ def generate_chargeback_report(
     group_by: Union[str, Sequence[str]] = "org_id",
 ) -> List[Dict[str, Any]]:
     """Aggregate usage into chargeback-friendly rows."""
+    warn_platform_ownership("agent_sdk.billing.generate_chargeback_report", "agent_platform.chargeback.generate_chargeback_report")
     group_fields = _parse_group_fields(group_by)
     aggregate: Dict[tuple, Dict[str, Any]] = {}
     session_sets: Dict[tuple, set[str]] = {}

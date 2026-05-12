@@ -17,6 +17,28 @@ from .config.rate_limit import RateLimitRule, RateLimiter
 from .observability.bus import EventBus
 from .observability.sinks import ConsoleSink, JSONLSink
 from .observability.events import ObsEvent
+from .contracts import (
+    AgentDefinition,
+    AgentRuntimeContract,
+    ExecutionMetadata,
+    RunEvent,
+    RunRequest,
+    RunResult,
+)
+from .ports import (
+    AgentRuntimePort,
+    EventPublisherPort,
+    IdentityProviderPort,
+    LLMClientPort,
+    MemoryRepositoryPort,
+    PolicyRegistryPort,
+    SecretsProviderPort,
+    StoragePort,
+    ToolRegistryPort,
+    ToolCallablePort,
+    WebhookSenderPort,
+)
+from .runtime import EmbeddedAgentRunner
 from .storage import StorageBackend, SQLiteStorage
 from .presets import PresetDefinition, list_presets, get_preset, get_preset_config
 from .tool_packs import TOOL_PACKS, GLOBAL_TOOL_METADATA, load_builtin_tool_packs
@@ -48,6 +70,24 @@ __all__ = [
     "ConsoleSink",
     "JSONLSink",
     "ObsEvent",
+    "AgentDefinition",
+    "AgentRuntimeContract",
+    "ExecutionMetadata",
+    "RunEvent",
+    "RunRequest",
+    "RunResult",
+    "AgentRuntimePort",
+    "EventPublisherPort",
+    "IdentityProviderPort",
+    "LLMClientPort",
+    "MemoryRepositoryPort",
+    "PolicyRegistryPort",
+    "SecretsProviderPort",
+    "StoragePort",
+    "ToolRegistryPort",
+    "ToolCallablePort",
+    "WebhookSenderPort",
+    "EmbeddedAgentRunner",
     "StorageBackend",
     "SQLiteStorage",
     "PresetDefinition",

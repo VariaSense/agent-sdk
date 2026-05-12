@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from urllib import request as urlrequest
 
+from agent_sdk._deprecation import warn_platform_ownership
 from agent_sdk.observability.audit_logs import AuditLogEntry, AuditLogExporter
 
 
@@ -35,6 +36,7 @@ class WebhookDelivery:
 
 class WebhookDispatcher:
     def __init__(self, subscriptions: List[WebhookSubscription]):
+        warn_platform_ownership("agent_sdk.webhooks.WebhookDispatcher", "agent_platform.webhooks.WebhookDispatcher")
         self._subscriptions = subscriptions
         self._dlq: List[WebhookDelivery] = []
 
@@ -86,6 +88,7 @@ class WebhookDispatcher:
 
 class WebhookAuditExporter(AuditLogExporter):
     def __init__(self, dispatcher: WebhookDispatcher):
+        warn_platform_ownership("agent_sdk.webhooks.WebhookAuditExporter", "agent_platform.webhooks.WebhookAuditExporter")
         self._dispatcher = dispatcher
 
     def emit(self, entry: AuditLogEntry) -> None:

@@ -2,24 +2,28 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Agent SDK is a battery-included platform for building and operating AI agents. It ships a planner/executor runtime, multi-tenant control plane, observability, governance, and deployment scaffolding so teams can ship production platforms without custom glue.
+Agent SDK is a reusable agent runtime for building and embedding AI agents. It ships the planner/executor core, tool/runtime contracts, observability hooks, and local developer surfaces needed to compose agent systems.
+
+Hosted control-plane and SaaS product surfaces now belong to `agent-platform`. A small number of legacy SDK modules remain as deprecated compatibility shims during the migration window.
 
 ## Highlights
 - Planner + executor runtime with streaming
 - Tool registry + packs + schema generation
-- Multi-tenant org/project model and API keys
-- Policy bundles, approvals, and safety guardrails
-- Audit logs with hash chaining and export
-- Webhooks with retries/DLQ and signatures
-- Usage, quotas, retention, and privacy exports
+- Public runtime contracts + integration ports
+- Safety and policy hooks for embedded runtimes
+- Audit and observability helpers
 - Health checks, OpenTelemetry, Prometheus
 - Durable queue + scheduler + replay
-- CLI utilities for ops, backup, compliance
-- Docker/K8s/Helm + Terraform references
+- CLI utilities for local/dev and compatibility workflows
+
+## Boundary Note
+
+- Canonical hosted API, tenant store, control plane backends, admin UI, dashboard, billing, privacy exports, and webhook delivery now live in `agent-platform`.
+- Deprecated SDK shim mappings are documented in `docs/DEPRECATION_POLICY.md`.
 
 ## Production-Grade Features
 
-**Security & Access**
+**Runtime Security**
 - API keys, JWT auth, RBAC scopes
 - Project-scoped API keys
 - IP allowlists and rate limits
@@ -117,15 +121,10 @@ docs/                # production and ops docs
  tests/              # test suite
 ```
 
-## Admin API Surface (Selected)
-- `POST /admin/projects`, `GET /admin/projects`, `DELETE /admin/projects/{id}`
-- `POST /admin/api-keys`, `GET /admin/api-keys`, `DELETE /admin/api-keys/{id}`
-- `POST /admin/policy-bundles`, `POST /admin/policy-approvals`, `POST /admin/policy-assignments`
-- `POST /admin/quotas`, `POST /admin/quotas/projects`, `POST /admin/quotas/api-keys`
-- `GET /admin/usage`, `GET /admin/usage/export`, `GET /admin/usage/projects`, `GET /admin/usage/api-keys`
-- `POST /admin/archives/export`, `POST /admin/archives/restore`
-- `POST /admin/privacy/export`
-- `GET /admin/providers/health`
+## Hosted Surface Note
+
+- If you need the hosted multi-tenant API or control-plane product surface, use `agent-platform`.
+- Legacy SDK hosted endpoints are compatibility shims and should not be used as the long-term integration target.
 
 ## Deployment
 - Docker: `Dockerfile`, `docker-compose.yml`

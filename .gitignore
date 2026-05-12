@@ -7,3 +7,4 @@ venv/
 .coverage
 htmlcov/
 agent_sdk.db
+.github/
