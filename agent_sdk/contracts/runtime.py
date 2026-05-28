@@ -13,7 +13,7 @@ CONTRACT_VERSION = "v1"
 class AgentDefinition(BaseModel):
     contract_version: Literal["v1"] = CONTRACT_VERSION
     name: str = Field(..., min_length=1, max_length=200)
-    model: str = Field(default="gpt-4o-mini", min_length=1, max_length=200)
+    model: str = Field(default="default", min_length=1, max_length=200)
     purpose: str = Field(default="", max_length=4000)
     tools: list[str] = Field(default_factory=list)
     channels: list[str] = Field(default_factory=list)

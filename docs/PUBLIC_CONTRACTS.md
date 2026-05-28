@@ -39,6 +39,10 @@ Defined in `agent_sdk.contracts.runtime`:
 - `RunResult`
 - `AgentRuntimeContract`
 
+Defined in `agent_sdk.contracts.external_agent`:
+
+- `ExternalAgentCommand`
+
 ## Public Support Ports
 
 - `EventPublisherPort`
@@ -65,5 +69,6 @@ Defined in `agent_sdk.contracts.runtime`:
 Applications embedding the SDK should instantiate a public runtime entrypoint such as:
 
 - `agent_sdk.runtime.EmbeddedAgentRunner`
+- `agent_sdk.runtime.ExternalAgentRuntime`
 
 They should not reconstruct runtime behavior by importing an arbitrary mix of planner, executor, server, or storage internals unless that integration is explicitly owned by the SDK API.

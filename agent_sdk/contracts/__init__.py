@@ -8,6 +8,7 @@ from agent_sdk.contracts.runtime import (
     RunRequest,
     RunResult,
 )
+from agent_sdk.contracts.external_agent import ExternalAgentCommand
 from agent_sdk.contracts.policy import (
     PolicyApproval,
     PolicyApprovalStatus,
@@ -19,6 +20,7 @@ __all__ = [
     "AgentDefinition",
     "AgentRuntimeContract",
     "ExecutionMetadata",
+    "ExternalAgentCommand",
     "PolicyApproval",
     "PolicyApprovalStatus",
     "PolicyAssignment",

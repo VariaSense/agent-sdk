@@ -8,3 +8,7 @@ def test_runtime_contracts_default_to_v1():
     assert RunRequest(agent=AgentDefinition(name="demo"), prompt="hi").contract_version == "v1"
     assert RunEvent(stream="lifecycle", event="started").contract_version == "v1"
     assert RunResult(status="completed", response="ok").contract_version == "v1"
+
+
+def test_agent_definition_uses_runtime_default_model():
+    assert AgentDefinition(name="demo").model == "default"

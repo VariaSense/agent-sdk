@@ -21,6 +21,7 @@ from .contracts import (
     AgentDefinition,
     AgentRuntimeContract,
     ExecutionMetadata,
+    ExternalAgentCommand,
     RunEvent,
     RunRequest,
     RunResult,
@@ -38,7 +39,7 @@ from .ports import (
     ToolCallablePort,
     WebhookSenderPort,
 )
-from .runtime import EmbeddedAgentRunner
+from .runtime import EmbeddedAgentRunner, ExternalAgentRuntime
 from .storage import StorageBackend, SQLiteStorage
 from .presets import PresetDefinition, list_presets, get_preset, get_preset_config
 from .tool_packs import TOOL_PACKS, GLOBAL_TOOL_METADATA, load_builtin_tool_packs
@@ -73,6 +74,7 @@ __all__ = [
     "AgentDefinition",
     "AgentRuntimeContract",
     "ExecutionMetadata",
+    "ExternalAgentCommand",
     "RunEvent",
     "RunRequest",
     "RunResult",
@@ -88,6 +90,7 @@ __all__ = [
     "ToolCallablePort",
     "WebhookSenderPort",
     "EmbeddedAgentRunner",
+    "ExternalAgentRuntime",
     "StorageBackend",
     "SQLiteStorage",
     "PresetDefinition",
